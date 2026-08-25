@@ -18,7 +18,7 @@ function renderCompany(data) {
   ).join('');
   const confidence = primary?.confidence ?? 0;
   const confidenceLabel = confidence >= 0.9 ? 'Correspondência forte' : confidence >= 0.7 ? 'Correspondência provável' : 'Correspondência a confirmar';
-  result.innerHTML = `<div class="result"><div class="public-name">${escapeHtml(primary?.name ?? 'Sem nome público conhecido')}</div><div class="legal">${escapeHtml(data.legalName)}</div><dl><dt>NIF</dt><dd>${escapeHtml(data.nif)}</dd><dt>Local</dt><dd>${escapeHtml(data.location || '—')}</dd></dl>${primary ? `<span class="confidence">✓ ${confidenceLabel}</span>` : ''}${sourceHtml ? `<div class="sources"><strong>Fontes</strong><ul>${sourceHtml}</ul></div>` : ''}</div>`;
+  return `<div class="result"><div class="public-name">${escapeHtml(primary?.name ?? 'Sem nome público conhecido')}</div><div class="legal">${escapeHtml(data.legalName)}</div><dl><dt>NIF</dt><dd>${escapeHtml(data.nif)}</dd><dt>Local</dt><dd>${escapeHtml(data.location || '—')}</dd></dl>${primary ? `<span class="confidence">✓ ${confidenceLabel}</span>` : ''}${sourceHtml ? `<div class="sources"><strong>Fontes</strong><ul>${sourceHtml}</ul></div>` : ''}</div>`;
 }
 
 function renderNotFound(nif) {
@@ -45,18 +45,38 @@ async function submitSuggestion(nif) {
   } catch (error) { status.textContent = error.message; }
 }
 
-async function searchNif(nif) {
+function renderSearchResults(payload) {
+  const results = payload.results || [];
+  if (!results.length) {
+    result.innerHTML = `<div class="empty"><strong>Não encontrámos correspondências.</strong>Se souberes qual é o nome público desta empresa, podes ajudar a completar a base.</div>`;
+    return;
+  }
+  result.innerHTML = `<div class="result"><strong>${results.length} resultado(s)</strong>${results.map(renderCompany).join('')}</div>`;
+}
+
+async function search(query) {
   result.innerHTML = '<div class="empty">A pesquisar…</div>';
-  const response = await fetch(`${API_BASE}/api/company/${encodeURIComponent(nif)}`);
-  if (response.status === 404) { renderNotFound(nif); return; }
+  if (/^\d{9}$/.test(query)) {
+    const response = await fetch(`${API_BASE}/api/company/${encodeURIComponent(query)}`);
+    if (response.status === 404) { renderNotFound(query); return; }
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Erro na pesquisa.');
+    result.innerHTML = renderCompany(data);
+    return;
+  }
+  const response = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(query)}`);
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || 'Erro na pesquisa.');
-  renderCompany(data);
+  renderSearchResults(data);
 }
 
 form.addEventListener('submit', async event => {
   event.preventDefault();
-  const nif = input.value.replace(/\D/g, '');
-  if (nif.length !== 9) { result.innerHTML = '<div class="empty">Introduz um NIF/NIPC válido com 9 dígitos.</div>'; return; }
-  try { await searchNif(nif); } catch (error) { result.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
+  const query = input.value.trim();
+  if (query.length < 2) {
+    result.innerHTML = '<div class="empty">Introduz um NIF de 9 dígitos ou pelo menos 2 caracteres.</div>';
+    return;
+  }
+  try { await search(query); }
+  catch (error) { result.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
 });
