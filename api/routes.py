@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-from .repository import add_suggestion, get_company
+from .repository import add_suggestion, get_company, list_pending_suggestions, review_suggestion
 from .search import search_companies, validate_nif
 
 
@@ -30,19 +30,26 @@ def create_suggestion(payload: dict) -> tuple[int, dict]:
     name = str(payload.get("name", "")).strip()
     source_url = str(payload.get("source_url", "")).strip()
     note = str(payload.get("note", "")).strip()
-
     if not validate_nif(nif):
         return 400, {"error": "NIF/NIPC inválido"}
     if not 2 <= len(name) <= 200:
         return 400, {"error": "O nome sugerido deve ter entre 2 e 200 caracteres"}
     if source_url and not re.match(r"^https?://", source_url, re.IGNORECASE):
         return 400, {"error": "A fonte deve ser um URL http(s) válido"}
-
-    suggestion = add_suggestion({
-        "nif": nif,
-        "name": name,
-        "source_url": source_url or None,
-        "note": note or None,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+    return 201, add_suggestion({
+        "nif": nif, "name": name, "source_url": source_url or None,
+        "note": note or None, "created_at": datetime.now(timezone.utc).isoformat(),
     })
-    return 201, suggestion
+
+
+def admin_suggestions() -> tuple[int, list[dict]]:
+    return 200, list_pending_suggestions()
+
+
+def admin_review(suggestion_id: int, decision: str) -> tuple[int, dict]:
+    if decision not in {"approve", "reject"}:
+        return 400, {"error": "Decisão inválida"}
+    updated = review_suggestion(suggestion_id, decision)
+    if updated is None:
+        return 404, {"error": "Sugestão não encontrada ou já revista"}
+    return 200, updated
