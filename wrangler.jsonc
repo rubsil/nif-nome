@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "nif-nome",
+  "main": "worker/src/index.ts",
+  "compatibility_date": "2026-08-25",
+  "observability": { "enabled": true },
+  "assets": {
+    "directory": "./web",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "nif-nome",
+      "database_id": "d300a891-5791-4a26-9204-cd962507c911",
+      "migrations_dir": "worker/migrations"
+    }
+  ]
+}
