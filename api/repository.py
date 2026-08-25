@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from confidence import confidence_for_sources
+
 ROOT = Path(__file__).resolve().parents[1]
 COMPANIES_FILE = ROOT / "web" / "data" / "companies.json"
 SUGGESTIONS_FILE = ROOT / "api" / "suggestions.json"
@@ -59,32 +61,20 @@ def review_suggestion(suggestion_id: int, decision: str) -> dict | None:
             nif = item["nif"]
             company = companies.get(nif)
             if company is None:
-                company = {
-                    "nif": nif,
-                    "legalName": "NIF identificado por contribuição comunitária",
-                    "publicNames": [],
-                    "location": None,
-                }
+                company = {"nif": nif, "legalName": "NIF identificado por contribuição comunitária", "publicNames": [], "location": None}
                 companies[nif] = company
 
             normalized = item["name"].strip().casefold()
-            existing = next(
-                (name for name in company.get("publicNames", [])
-                 if name.get("name", "").strip().casefold() == normalized),
-                None,
-            )
+            existing = next((name for name in company.get("publicNames", []) if name.get("name", "").strip().casefold() == normalized), None)
             if existing is None:
-                company.setdefault("publicNames", []).append({
-                    "name": item["name"].strip(),
-                    "type": "commercial",
-                    "confidence": 0.70,
-                    "sources": ([{"name": "Contribuição comunitária", "url": item["source_url"]}]
-                                if item.get("source_url") else []),
-                })
-            elif item.get("source_url"):
+                existing = {"name": item["name"].strip(), "type": "commercial", "confidence": 0.0, "sources": []}
+                company.setdefault("publicNames", []).append(existing)
+
+            if item.get("source_url"):
                 sources = existing.setdefault("sources", [])
                 if not any(source.get("url") == item["source_url"] for source in sources):
-                    sources.append({"name": "Contribuição comunitária", "url": item["source_url"]})
+                    sources.append({"name": "Contribuição comunitária", "url": item["source_url"], "source_type": "community"})
+            existing["confidence"] = confidence_for_sources(existing.get("sources", []))
 
             item["status"] = "approved"
             item["published"] = True
