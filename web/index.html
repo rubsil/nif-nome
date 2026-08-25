@@ -26,7 +26,10 @@
     dl { display: grid; grid-template-columns: 110px 1fr; gap: 8px 16px; margin: 0; }
     dt { color: #7b8495; } dd { margin: 0; }
     .confidence { display: inline-block; margin-top: 18px; padding: 6px 9px; border-radius: 999px; background: #eef7ef; color: #28653a; font-size: .85rem; font-weight: 650; }
+    .sources { margin-top: 18px; padding-top: 14px; border-top: 1px solid #e5e8ee; font-size: .9rem; }
+    .sources a { color: inherit; }
     .empty { color: #687386; padding: 8px 0; }
+    .empty strong { display: block; color: #172033; margin-bottom: 5px; }
     footer { text-align: center; color: #8992a3; font-size: .82rem; margin-top: 22px; }
     @media (max-width: 560px) { form { flex-direction: column; } button { min-height: 48px; } dl { grid-template-columns: 1fr; gap: 3px; } dd { margin-bottom: 8px; } }
   </style>
@@ -42,50 +45,11 @@
       <input id="nif" name="nif" inputmode="numeric" autocomplete="off" maxlength="9" placeholder="Introduz o NIF (ex.: 512044821)" aria-label="NIF">
       <button type="submit">Pesquisar</button>
     </form>
-    <p class="hint">Por agora estamos a testar a base inicial.</p>
+    <p class="hint">Pesquisa por NIF/NIPC. A base mostra as fontes e o nível de confiança.</p>
     <div id="result" aria-live="polite"></div>
   </section>
   <footer>Projeto comunitário NIF → Nome · informação com fontes e evidências</footer>
 </main>
-<script>
-const seed = {
-  "512044821": {
-    publicName: "FARMÁCIA CORREA",
-    legalName: "SOUSA & SILVA, LDA",
-    location: "Horta, Açores",
-    confidence: "Correspondência forte",
-    source: "Empresite — designação comercial"
-  }
-};
-
-function render(data) {
-  const result = document.querySelector('#result');
-  if (!data) {
-    result.innerHTML = '<div class="empty">Ainda não temos uma correspondência para este NIF. Em breve poderás também sugerir um nome e indicar a fonte.</div>';
-    return;
-  }
-  result.innerHTML = `
-    <div class="result">
-      <div class="public-name">${data.publicName}</div>
-      <div class="legal">${data.legalName}</div>
-      <dl>
-        <dt>NIF</dt><dd>${document.querySelector('#nif').value.replace(/\D/g, '')}</dd>
-        <dt>Local</dt><dd>${data.location}</dd>
-        <dt>Fonte</dt><dd>${data.source}</dd>
-      </dl>
-      <span class="confidence">✓ ${data.confidence}</span>
-    </div>`;
-}
-
-document.querySelector('#searchForm').addEventListener('submit', event => {
-  event.preventDefault();
-  const nif = document.querySelector('#nif').value.replace(/\D/g, '');
-  if (nif.length !== 9) {
-    document.querySelector('#result').innerHTML = '<div class="empty">Introduz um NIF/NIPC válido com 9 dígitos.</div>';
-    return;
-  }
-  render(seed[nif]);
-});
-</script>
+<script src="./app.js" defer></script>
 </body>
 </html>
