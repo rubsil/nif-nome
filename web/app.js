@@ -1,4 +1,4 @@
-const DATA_URL = './data/companies.json';
+const API_BASE = window.NIF_NOME_API || 'http://127.0.0.1:8000';
 
 const form = document.querySelector('#searchForm');
 const input = document.querySelector('#nif');
@@ -10,59 +10,53 @@ function escapeHtml(value) {
   }[char]));
 }
 
-function render(data, nif) {
-  if (!data) {
-    result.innerHTML = `
-      <div class="empty">
-        <strong>Ainda não conhecemos este NIF.</strong>
-        Se souberes qual é o nome pelo qual esta empresa é conhecida,
-        futuramente poderás sugeri-lo e indicar uma fonte.
-      </div>`;
-    return;
-  }
-
+function renderCompany(data) {
   const primary = data.publicNames?.[0];
   const sources = primary?.sources ?? [];
   const sourceHtml = sources.map(source =>
     `<li><a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(source.name)}</a></li>`
   ).join('');
-
   const confidence = primary?.confidence ?? 0;
-  const confidenceLabel = confidence >= 0.9 ? 'Correspondência forte'
-    : confidence >= 0.7 ? 'Correspondência provável'
-    : 'Correspondência a confirmar';
-
-  result.innerHTML = `
-    <div class="result">
-      <div class="public-name">${escapeHtml(primary?.name ?? 'Sem nome público conhecido')}</div>
-      <div class="legal">${escapeHtml(data.legalName)}</div>
-      <dl>
-        <dt>NIF</dt><dd>${escapeHtml(nif)}</dd>
-        <dt>Local</dt><dd>${escapeHtml(data.location || '—')}</dd>
-      </dl>
-      ${primary ? `<span class="confidence">✓ ${confidenceLabel}</span>` : ''}
-      ${sourceHtml ? `<div class="sources"><strong>Fontes</strong><ul>${sourceHtml}</ul></div>` : ''}
-    </div>`;
+  const confidenceLabel = confidence >= 0.9 ? 'Correspondência forte' : confidence >= 0.7 ? 'Correspondência provável' : 'Correspondência a confirmar';
+  result.innerHTML = `<div class="result"><div class="public-name">${escapeHtml(primary?.name ?? 'Sem nome público conhecido')}</div><div class="legal">${escapeHtml(data.legalName)}</div><dl><dt>NIF</dt><dd>${escapeHtml(data.nif)}</dd><dt>Local</dt><dd>${escapeHtml(data.location || '—')}</dd></dl>${primary ? `<span class="confidence">✓ ${confidenceLabel}</span>` : ''}${sourceHtml ? `<div class="sources"><strong>Fontes</strong><ul>${sourceHtml}</ul></div>` : ''}</div>`;
 }
 
-async function search(nif) {
+function renderNotFound(nif) {
+  result.innerHTML = `<div class="empty"><strong>NIF ${escapeHtml(nif)} ainda não está na nossa base.</strong><button type="button" id="suggestButton">Conheço o nome desta empresa</button></div>`;
+  document.querySelector('#suggestButton').addEventListener('click', () => showSuggestionForm(nif));
+}
+
+function showSuggestionForm(nif) {
+  result.innerHTML = `<div class="suggestion"><strong>Ajuda-nos a identificar esta empresa</strong><p>Não precisas de criar conta. Indica o nome que conheces e, se possível, uma fonte pública.</p><label>Nome público<input id="suggestName" maxlength="200" placeholder="Ex.: Café Central"></label><label>Fonte (opcional)<input id="suggestSource" type="url" maxlength="1000" placeholder="https://..."></label><button type="button" id="sendSuggestion">Enviar sugestão</button><div id="suggestStatus"></div></div>`;
+  document.querySelector('#sendSuggestion').addEventListener('click', () => submitSuggestion(nif));
+}
+
+async function submitSuggestion(nif) {
+  const name = document.querySelector('#suggestName').value.trim();
+  const source_url = document.querySelector('#suggestSource').value.trim();
+  const status = document.querySelector('#suggestStatus');
+  if (!name) { status.textContent = 'Indica o nome público.'; return; }
+  status.textContent = 'A enviar…';
+  try {
+    const response = await fetch(`${API_BASE}/api/suggestions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nif, name, source_url }) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Não foi possível enviar.');
+    status.textContent = '✓ Obrigado! A sugestão ficou registada para revisão.';
+  } catch (error) { status.textContent = error.message; }
+}
+
+async function searchNif(nif) {
   result.innerHTML = '<div class="empty">A pesquisar…</div>';
-  const response = await fetch(`${DATA_URL}?v=${Date.now()}`, { cache: 'no-store' });
-  if (!response.ok) throw new Error('Não foi possível carregar a base de dados.');
+  const response = await fetch(`${API_BASE}/api/company/${encodeURIComponent(nif)}`);
+  if (response.status === 404) { renderNotFound(nif); return; }
   const data = await response.json();
-  render(data[nif], nif);
+  if (!response.ok) throw new Error(data.error || 'Erro na pesquisa.');
+  renderCompany(data);
 }
 
 form.addEventListener('submit', async event => {
   event.preventDefault();
   const nif = input.value.replace(/\D/g, '');
-  if (nif.length !== 9) {
-    result.innerHTML = '<div class="empty">Introduz um NIF/NIPC válido com 9 dígitos.</div>';
-    return;
-  }
-  try {
-    await search(nif);
-  } catch (error) {
-    result.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
-  }
+  if (nif.length !== 9) { result.innerHTML = '<div class="empty">Introduz um NIF/NIPC válido com 9 dígitos.</div>'; return; }
+  try { await searchNif(nif); } catch (error) { result.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
 });
