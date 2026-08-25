@@ -10,15 +10,41 @@ function escapeHtml(value) {
   }[char]));
 }
 
+function confidenceInfo(score) {
+  const value = Number(score) || 0;
+  if (value >= 0.85) return { label: 'Confiança elevada', className: 'high' };
+  if (value >= 0.60) return { label: 'Correspondência provável', className: 'medium' };
+  if (value >= 0.35) return { label: 'Confiança baixa', className: 'low' };
+  return { label: 'Ainda por confirmar', className: 'low' };
+}
+
+function sourceTypeLabel(type) {
+  return ({ government: 'Governo', official: 'Oficial', directory: 'Diretório', web: 'Website', community: 'Comunidade', other: 'Outra' })[type] || 'Fonte';
+}
+
+function renderPublicName(name) {
+  const sources = name.sources ?? [];
+  const confidence = Number(name.confidence) || 0;
+  const info = confidenceInfo(confidence);
+  const sourceHtml = sources.length
+    ? `<ul class="source-list">${sources.map(source => `<li><a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(source.name)}</a><span>${escapeHtml(sourceTypeLabel(source.source_type))}</span></li>`).join('')}</ul>`
+    : '<p class="muted">Ainda sem fontes públicas associadas.</p>';
+  return `<article class="public-name-card"><div class="public-name">${escapeHtml(name.name)}</div><div class="name-type">${escapeHtml(name.type || 'nome público')}</div><div class="confidence-row"><span class="confidence ${info.className}">✓ ${info.label}</span><strong>${Math.round(confidence * 100)}%</strong></div><div class="sources"><strong>Fontes e evidências</strong>${sourceHtml}</div></article>`;
+}
+
 function renderCompany(data) {
-  const primary = data.publicNames?.[0];
-  const sources = primary?.sources ?? [];
-  const sourceHtml = sources.map(source =>
-    `<li><a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(source.name)}</a></li>`
-  ).join('');
-  const confidence = primary?.confidence ?? 0;
-  const confidenceLabel = confidence >= 0.9 ? 'Correspondência forte' : confidence >= 0.7 ? 'Correspondência provável' : 'Correspondência a confirmar';
-  return `<div class="result"><div class="public-name">${escapeHtml(primary?.name ?? 'Sem nome público conhecido')}</div><div class="legal">${escapeHtml(data.legalName)}</div><dl><dt>NIF</dt><dd>${escapeHtml(data.nif)}</dd><dt>Local</dt><dd>${escapeHtml(data.location || '—')}</dd></dl>${primary ? `<span class="confidence">✓ ${confidenceLabel}</span>` : ''}${sourceHtml ? `<div class="sources"><strong>Fontes</strong><ul>${sourceHtml}</ul></div>` : ''}</div>`;
+  const names = data.publicNames ?? [];
+  const primary = names[0];
+  return `<div class="company-profile">
+    <header class="company-header">
+      <div class="eyebrow">Empresa identificada</div>
+      <h2>${escapeHtml(primary?.name ?? 'Sem nome público conhecido')}</h2>
+      <p class="legal">${escapeHtml(data.legalName || 'Denominação legal ainda não identificada')}</p>
+    </header>
+    <div class="company-meta"><div><span>NIF</span><strong>${escapeHtml(data.nif)}</strong></div><div><span>Localização</span><strong>${escapeHtml(data.location || '—')}</strong></div></div>
+    <section><h3>Nomes conhecidos</h3>${names.length ? names.map(renderPublicName).join('') : '<div class="empty">Ainda não temos um nome público confirmado para esta empresa.</div>'}</section>
+    <div class="profile-note">A denominação social e o nome pelo qual o estabelecimento é conhecido podem ser diferentes. As associações são apresentadas com as fontes disponíveis.</div>
+  </div>`;
 }
 
 function renderNotFound(nif) {
@@ -51,7 +77,7 @@ function renderSearchResults(payload) {
     result.innerHTML = `<div class="empty"><strong>Não encontrámos correspondências.</strong>Se souberes qual é o nome público desta empresa, podes ajudar a completar a base.</div>`;
     return;
   }
-  result.innerHTML = `<div class="result"><strong>${results.length} resultado(s)</strong>${results.map(renderCompany).join('')}</div>`;
+  result.innerHTML = `<div class="result-summary">${results.length} resultado(s)</div>${results.map(renderCompany).join('')}`;
 }
 
 async function search(query) {
