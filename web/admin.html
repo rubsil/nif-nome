@@ -1,11 +1,28 @@
 <!doctype html>
 <html lang="pt-PT">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NIF → Nome · Revisão</title><style>body{font-family:system-ui,sans-serif;max-width:1000px;margin:40px auto;padding:0 20px;background:#f6f7fb;color:#172033}.muted{color:#697386}.card{background:#fff;border:1px solid #e1e5ec;border-radius:14px;padding:18px;margin:14px 0}.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}dt{color:#737d90;font-size:.85rem}dd{margin:2px 0 12px}a{color:inherit;word-break:break-all}button{border:0;border-radius:9px;padding:10px 15px;cursor:pointer;font-weight:650;margin-right:8px}.approve{background:#dff3e4;color:#235b32}.reject{background:#f5e1e1;color:#7a2c2c}@media(max-width:650px){.row{grid-template-columns:1fr}}</style></head>
-<body><h1>Revisão de sugestões</h1><p class="muted">Confirma ou rejeita sugestões antes de entrarem na base pública.</p><div id="status">A carregar…</div><div id="list"></div>
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NIF → Nome · Administração</title>
+<style>
+body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:1100px;margin:36px auto;padding:0 20px;background:#f6f7fb;color:#172033}.muted{color:#697386}.tabs{display:flex;gap:8px;margin:24px 0}.tab{background:#e9edf4;color:#39445a}.tab.active{background:#172033;color:#fff}.card{background:#fff;border:1px solid #e1e5ec;border-radius:14px;padding:18px;margin:14px 0}.row{display:grid;grid-template-columns:1fr 1fr;gap:18px}dt{color:#737d90;font-size:.82rem}dd{margin:3px 0 13px}a{color:inherit;word-break:break-all}button{border:0;border-radius:9px;padding:10px 15px;cursor:pointer;font:inherit;font-weight:650;margin:4px 8px 0 0}.approve{background:#dff3e4;color:#235b32}.reject{background:#f5e1e1;color:#7a2c2c}.source{display:inline-block;padding:4px 8px;border-radius:999px;background:#eef1f6;font-size:.8rem;margin-top:4px}.empty{padding:20px 0}.error{color:#8a3030}@media(max-width:650px){.row{grid-template-columns:1fr}.tabs{flex-wrap:wrap}}
+</style>
+</head>
+<body>
+<h1>NIF → Nome · Administração</h1>
+<p class="muted">Revisa contribuições da comunidade e descobertas automáticas antes de serem publicadas.</p>
+<div class="tabs"><button id="suggestionsTab" class="tab active" onclick="show('suggestions')">👤 Sugestões <span id="suggestionCount"></span></button><button id="candidatesTab" class="tab" onclick="show('candidates')">🤖 Descobertas <span id="candidateCount"></span></button></div>
+<div id="status">A carregar…</div><div id="list"></div>
 <script>
 const API_BASE=window.NIF_NOME_API||'http://127.0.0.1:8000';
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
-async function review(id,decision){const response=await fetch(`${API_BASE}/api/admin/suggestions/${id}/${decision}`,{method:'POST'});const data=await response.json();if(!response.ok)throw new Error(data.error||'Erro');await load();}
-async function load(){const response=await fetch(`${API_BASE}/api/admin/suggestions`);const data=await response.json();if(!response.ok)throw new Error(data.error||'Erro');document.querySelector('#status').textContent=`${data.length} sugestão(ões) pendente(s)`;document.querySelector('#list').innerHTML=data.map(item=>`<article class="card"><div class="row"><dl><dt>NIF</dt><dd>${esc(item.nif)}</dd><dt>Nome sugerido</dt><dd>${esc(item.name)}</dd></dl><dl><dt>Fonte</dt><dd>${item.source_url?`<a href="${esc(item.source_url)}" target="_blank" rel="noopener">${esc(item.source_url)}</a>`:'—'}</dd><dt>Data</dt><dd>${esc(item.created_at||'—')}</dd></dl></div><button class="approve" onclick="review(${Number(item.id)},'approve')">Confirmar</button><button class="reject" onclick="review(${Number(item.id)},'reject')">Rejeitar</button></article>`).join('')||'<p class="muted">Sem sugestões pendentes.</p>';}
-load().catch(e=>document.querySelector('#status').textContent=e.message);
-</script></body></html>
+let current='suggestions', cache={suggestions:[],candidates:[]};
+async function get(path){const r=await fetch(API_BASE+path);const d=await r.json();if(!r.ok)throw new Error(d.error||'Erro');return d;}
+async function decide(kind,id,decision){const path=kind==='suggestions'?`/api/admin/suggestions/${id}/${decision}`:`/api/admin/candidates/${id}/${decision}`;const r=await fetch(API_BASE+path,{method:'POST'});const d=await r.json();if(!r.ok)throw new Error(d.error||'Erro');await load();}
+function cardSuggestion(x){return `<article class="card"><div class="row"><dl><dt>NIF</dt><dd><strong>${esc(x.nif)}</strong></dd><dt>Nome sugerido</dt><dd>${esc(x.name)}</dd><dt>Nota</dt><dd>${esc(x.note||'—')}</dd></dl><dl><dt>Fonte indicada</dt><dd>${x.source_url?`<a href="${esc(x.source_url)}" target="_blank" rel="noopener">${esc(x.source_url)}</a>`:'—'}</dd><dt>Submetido</dt><dd>${esc(x.created_at||'—')}</dd></dl></div><button class="approve" onclick="decide('suggestions',${Number(x.id)},'approve')">✓ Confirmar</button><button class="reject" onclick="decide('suggestions',${Number(x.id)},'reject')">✕ Rejeitar</button></article>`;}
+function cardCandidate(x){const s=x.source||{};return `<article class="card"><div class="row"><dl><dt>NIF descoberto</dt><dd><strong>${esc(x.nif)}</strong></dd><dt>Nome encontrado</dt><dd>${esc(x.name)}</dd><dt>Estado</dt><dd><span class="source">Descoberta automática</span></dd></dl><dl><dt>Fonte</dt><dd>${s.url?`<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.name||s.url)}</a>`:'—'}</dd><dt>Tipo de fonte</dt><dd>${esc(s.source_type||'web')}</dd></dl></div><button class="approve" onclick="decide('candidates',${Number(x.id)},'approve')">✓ Publicar</button><button class="reject" onclick="decide('candidates',${Number(x.id)},'reject')">✕ Rejeitar</button></article>`;}
+function render(){const items=cache[current];document.querySelector('#status').textContent=`${items.length} item(ns) pendente(s)`;document.querySelector('#list').innerHTML=items.map(current==='suggestions'?cardSuggestion:cardCandidate).join('')||'<div class="empty muted">Não existem itens pendentes nesta fila.</div>';}
+function show(kind){current=kind;document.querySelector('#suggestionsTab').classList.toggle('active',kind==='suggestions');document.querySelector('#candidatesTab').classList.toggle('active',kind==='candidates');render();}
+async function load(){try{const [s,c]=await Promise.all([get('/api/admin/suggestions'),get('/api/admin/candidates')]);cache={suggestions:s,candidates:c};document.querySelector('#suggestionCount').textContent=`(${s.length})`;document.querySelector('#candidateCount').textContent=`(${c.length})`;render();}catch(e){document.querySelector('#status').innerHTML=`<span class="error">${esc(e.message)}</span>`;}}
+load();
+</script>
+</body></html>
