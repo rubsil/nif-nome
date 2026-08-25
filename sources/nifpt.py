@@ -3,16 +3,20 @@
 The client deliberately returns the raw useful fields instead of trying to
 infer a commercial name. Name discovery is a separate layer so every name
 can retain its evidence and confidence.
+
+Set NIFPT_API_KEY in the environment before using the API.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-BASE_URL = "https://www.nif.pt"
+BASE_URL = "https://www.nif.pt/"
 
 
 def normalize_nif(value: str) -> str:
@@ -22,10 +26,15 @@ def normalize_nif(value: str) -> str:
     return nif
 
 
-def lookup(nif: str, timeout: int = 15) -> dict:
+def lookup(nif: str, api_key: str | None = None, timeout: int = 15) -> dict:
     nif = normalize_nif(nif)
+    key = api_key or os.environ.get("NIFPT_API_KEY")
+    if not key:
+        raise RuntimeError("NIFPT_API_KEY is not set")
+
+    query = urlencode({"json": "1", "q": nif, "key": key})
     request = Request(
-        f"{BASE_URL}/?json=1&q={nif}",
+        f"{BASE_URL}?{query}",
         headers={"User-Agent": "nif-nome/0.1 (+https://github.com/rubsil/nif-nome)"},
     )
     try:
@@ -36,6 +45,8 @@ def lookup(nif: str, timeout: int = 15) -> dict:
 
     if not isinstance(payload, dict):
         raise RuntimeError("Unexpected NIF.pt response")
+    if payload.get("result") != "success":
+        raise RuntimeError(f"NIF.pt returned an unsuccessful response: {payload}")
 
     return payload
 
