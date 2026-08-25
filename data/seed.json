@@ -1,0 +1,22 @@
+{
+  "companies": [
+    {
+      "nif": "512044821",
+      "legal_name": "SOUSA & SILVA, LDA",
+      "public_names": [
+        {
+          "name": "FARMÁCIA CORREA",
+          "name_type": "commercial",
+          "confidence": 0.85,
+          "evidence": [
+            {
+              "source_name": "Empresite",
+              "source_url": "https://empresite.jornaldenegocios.pt/SOUSA-SILVA.html",
+              "note": "Ficha empresarial apresenta a designação comercial FARMÁCIA CORREA."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
