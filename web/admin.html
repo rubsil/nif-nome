@@ -1,39 +1,11 @@
 <!doctype html>
 <html lang="pt-PT">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NIF → Nome · Revisão</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 1000px; margin: 40px auto; padding: 0 20px; background: #f6f7fb; color: #172033; }
-    h1 { margin-bottom: 8px; }
-    .muted { color: #697386; }
-    .card { background: #fff; border: 1px solid #e1e5ec; border-radius: 14px; padding: 18px; margin: 14px 0; }
-    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    dt { color: #737d90; font-size: .85rem; } dd { margin: 2px 0 12px; }
-    a { color: inherit; word-break: break-all; }
-    button { border: 0; border-radius: 9px; padding: 10px 15px; cursor: pointer; font-weight: 650; margin-right: 8px; }
-    .approve { background: #dff3e4; color: #235b32; }
-    .reject { background: #f5e1e1; color: #7a2c2c; }
-    #status { margin: 15px 0; }
-    @media (max-width: 650px) { .row { grid-template-columns: 1fr; } }
-  </style>
-</head>
-<body>
-  <h1>Revisão de sugestões</h1>
-  <p class="muted">Área administrativa inicial. Nesta versão as sugestões são apenas consultadas; aprovação/rejeição será ligada à API na próxima etapa.</p>
-  <div id="status">A carregar…</div>
-  <div id="list"></div>
-  <script>
-    const API_BASE = window.NIF_NOME_API || 'http://127.0.0.1:8000';
-    async function load() {
-      const response = await fetch(`${API_BASE}/api/admin/suggestions`);
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Erro');
-      document.querySelector('#status').textContent = `${data.length} sugestão(ões) pendente(s)`;
-      document.querySelector('#list').innerHTML = data.map(item => `<article class="card"><div class="row"><dl><dt>NIF</dt><dd>${item.nif}</dd><dt>Nome sugerido</dt><dd>${item.name}</dd></dl><dl><dt>Fonte</dt><dd>${item.source_url ? `<a href="${item.source_url}" target="_blank" rel="noopener">${item.source_url}</a>` : '—'}</dd><dt>Data</dt><dd>${item.created_at || '—'}</dd></dl></div><button class="approve" data-id="${item.id}">Confirmar</button><button class="reject" data-id="${item.id}">Rejeitar</button></article>`).join('') || '<p class="muted">Sem sugestões pendentes.</p>';
-    }
-    load().catch(error => document.querySelector('#status').textContent = error.message);
-  </script>
-</body>
-</html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NIF → Nome · Revisão</title><style>body{font-family:system-ui,sans-serif;max-width:1000px;margin:40px auto;padding:0 20px;background:#f6f7fb;color:#172033}.muted{color:#697386}.card{background:#fff;border:1px solid #e1e5ec;border-radius:14px;padding:18px;margin:14px 0}.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}dt{color:#737d90;font-size:.85rem}dd{margin:2px 0 12px}a{color:inherit;word-break:break-all}button{border:0;border-radius:9px;padding:10px 15px;cursor:pointer;font-weight:650;margin-right:8px}.approve{background:#dff3e4;color:#235b32}.reject{background:#f5e1e1;color:#7a2c2c}@media(max-width:650px){.row{grid-template-columns:1fr}}</style></head>
+<body><h1>Revisão de sugestões</h1><p class="muted">Confirma ou rejeita sugestões antes de entrarem na base pública.</p><div id="status">A carregar…</div><div id="list"></div>
+<script>
+const API_BASE=window.NIF_NOME_API||'http://127.0.0.1:8000';
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+async function review(id,decision){const response=await fetch(`${API_BASE}/api/admin/suggestions/${id}/${decision}`,{method:'POST'});const data=await response.json();if(!response.ok)throw new Error(data.error||'Erro');await load();}
+async function load(){const response=await fetch(`${API_BASE}/api/admin/suggestions`);const data=await response.json();if(!response.ok)throw new Error(data.error||'Erro');document.querySelector('#status').textContent=`${data.length} sugestão(ões) pendente(s)`;document.querySelector('#list').innerHTML=data.map(item=>`<article class="card"><div class="row"><dl><dt>NIF</dt><dd>${esc(item.nif)}</dd><dt>Nome sugerido</dt><dd>${esc(item.name)}</dd></dl><dl><dt>Fonte</dt><dd>${item.source_url?`<a href="${esc(item.source_url)}" target="_blank" rel="noopener">${esc(item.source_url)}</a>`:'—'}</dd><dt>Data</dt><dd>${esc(item.created_at||'—')}</dd></dl></div><button class="approve" onclick="review(${Number(item.id)},'approve')">Confirmar</button><button class="reject" onclick="review(${Number(item.id)},'reject')">Rejeitar</button></article>`).join('')||'<p class="muted">Sem sugestões pendentes.</p>';}
+load().catch(e=>document.querySelector('#status').textContent=e.message);
+</script></body></html>
