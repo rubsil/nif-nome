@@ -1,7 +1,10 @@
+import { findByNif } from "./providers/nifpt";
+
 export interface Env {
   DB: D1Database;
   ENVIRONMENT: string;
   ASSETS: Fetcher;
+  NIFPT_API_KEY?: string;
 }
 
 function corsHeaders() {
@@ -25,21 +28,50 @@ function companyPayload(row: Record<string, unknown>) {
     nif: row.nif,
     legalName: row.legal_name,
     location: row.location,
-    publicNames: row.public_name ? [{
-      name: row.public_name,
-      type: "nome comercial",
-      confidence,
-      sources: [],
-    }] : [],
+    publicNames: row.public_name ? [{ name: row.public_name, type: "nome comercial", confidence, sources: [] }] : [],
   };
+}
+
+async function discoverWithNifPt(nif: string, env: Env) {
+  if (!env.NIFPT_API_KEY) return null;
+  const found = await findByNif(nif, env.NIFPT_API_KEY);
+  if (!found) return null;
+  const r = found.record;
+  const location = r.place?.city || r.city || r.geo?.county || null;
+  const publicName = r.alias || null;
+
+  await env.DB.prepare(
+    `INSERT INTO companies (nif, legal_name, public_name, location, confidence)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(nif) DO UPDATE SET
+       legal_name = excluded.legal_name,
+       public_name = COALESCE(excluded.public_name, companies.public_name),
+       location = COALESCE(excluded.location, companies.location)`
+  ).bind(nif, r.title || "", publicName, location, publicName ? 0.85 : 0).run();
+
+  return { nif, legalName: r.title || null, publicName, location, website: r.contacts?.website || null, activity: r.activity || null, cae: r.cae || null, source: "nif.pt" };
 }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders() });
     if (url.pathname === "/health") return json({ ok: true, environment: env.ENVIRONMENT || "production" });
+
+    if (url.pathname === "/api/discover" && request.method === "GET") {
+      const nif = (url.searchParams.get("nif") || "").replace(/\D/g, "");
+      if (nif.length !== 9) return json({ error: "NIF inválido." }, { status: 400 });
+      const existing = await env.DB.prepare("SELECT * FROM companies WHERE nif = ? LIMIT 1").bind(nif).first<Record<string, unknown>>();
+      if (existing) return json({ found: true, cached: true, company: companyPayload(existing) });
+      try {
+        const discovered = await discoverWithNifPt(nif, env);
+        if (discovered) return json({ found: true, cached: false, company: discovered });
+      } catch (error) {
+        console.error(JSON.stringify({ event: "discovery_error", provider: "nif.pt", nif, error: String(error) }));
+        return json({ found: false, error: "A fonte de descoberta não está disponível neste momento." }, { status: 502 });
+      }
+      return json({ found: false, sources_checked: ["nif.pt"] });
+    }
 
     if (url.pathname.startsWith("/api/company/") && request.method === "GET") {
       const nif = url.pathname.slice("/api/company/".length).replace(/\D/g, "");
@@ -55,8 +87,7 @@ export default {
       const digits = q.replace(/\D/g, "");
       const rows = digits.length === 9
         ? await env.DB.prepare("SELECT * FROM companies WHERE nif = ? LIMIT 1").bind(digits).all()
-        : await env.DB.prepare("SELECT * FROM companies WHERE legal_name LIKE ? OR public_name LIKE ? OR location LIKE ? LIMIT 20")
-            .bind(`%${q}%`, `%${q}%`, `%${q}%`).all();
+        : await env.DB.prepare("SELECT * FROM companies WHERE legal_name LIKE ? OR public_name LIKE ? OR location LIKE ? LIMIT 20").bind(`%${q}%`, `%${q}%`, `%${q}%`).all();
       return json({ results: rows.results.map(companyPayload) });
     }
 
@@ -65,9 +96,7 @@ export default {
       const nif = (body.nif || "").replace(/\D/g, "");
       const name = (body.name || "").trim();
       if (nif.length !== 9 || name.length < 2) return json({ error: "NIF e nome são obrigatórios." }, { status: 400 });
-      await env.DB.prepare(
-        "INSERT INTO suggestions (nif, name, source_url, note, status, created_at) VALUES (?, ?, ?, ?, 'pending', datetime('now'))"
-      ).bind(nif, name, body.source_url || null, body.note || null).run();
+      await env.DB.prepare("INSERT INTO suggestions (nif, name, source_url, note, status, created_at) VALUES (?, ?, ?, ?, 'pending', datetime('now'))").bind(nif, name, body.source_url || null, body.note || null).run();
       return json({ ok: true, status: "pending" }, { status: 201 });
     }
 
