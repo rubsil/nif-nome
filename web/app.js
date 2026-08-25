@@ -1,13 +1,12 @@
-const API_BASE = window.NIF_NOME_API || 'http://127.0.0.1:8000';
+const API_BASE = window.NIF_NOME_API || '';
+let STATIC_COMPANIES = null;
 
 const form = document.querySelector('#searchForm');
 const input = document.querySelector('#nif');
 const result = document.querySelector('#result');
 
 function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>\"']/g, char => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
-  }[char]));
+  return String(value ?? '').replace(/[&<>\"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char]));
 }
 
 function confidenceInfo(score) {
@@ -35,16 +34,7 @@ function renderPublicName(name) {
 function renderCompany(data) {
   const names = data.publicNames ?? [];
   const primary = names[0];
-  return `<div class="company-profile">
-    <header class="company-header">
-      <div class="eyebrow">Empresa identificada</div>
-      <h2>${escapeHtml(primary?.name ?? 'Sem nome público conhecido')}</h2>
-      <p class="legal">${escapeHtml(data.legalName || 'Denominação legal ainda não identificada')}</p>
-    </header>
-    <div class="company-meta"><div><span>NIF</span><strong>${escapeHtml(data.nif)}</strong></div><div><span>Localização</span><strong>${escapeHtml(data.location || '—')}</strong></div></div>
-    <section><h3>Nomes conhecidos</h3>${names.length ? names.map(renderPublicName).join('') : '<div class="empty">Ainda não temos um nome público confirmado para esta empresa.</div>'}</section>
-    <div class="profile-note">A denominação social e o nome pelo qual o estabelecimento é conhecido podem ser diferentes. As associações são apresentadas com as fontes disponíveis.</div>
-  </div>`;
+  return `<div class="company-profile"><header class="company-header"><div class="eyebrow">Empresa identificada</div><h2>${escapeHtml(primary?.name ?? 'Sem nome público conhecido')}</h2><p class="legal">${escapeHtml(data.legalName || 'Denominação legal ainda não identificada')}</p></header><div class="company-meta"><div><span>NIF</span><strong>${escapeHtml(data.nif)}</strong></div><div><span>Localização</span><strong>${escapeHtml(data.location || '—')}</strong></div></div><section><h3>Nomes conhecidos</h3>${names.length ? names.map(renderPublicName).join('') : '<div class="empty">Ainda não temos um nome público confirmado para esta empresa.</div>'}</section><div class="profile-note">A denominação social e o nome pelo qual o estabelecimento é conhecido podem ser diferentes. As associações são apresentadas com as fontes disponíveis.</div></div>`;
 }
 
 function renderNotFound(nif) {
@@ -53,8 +43,17 @@ function renderNotFound(nif) {
 }
 
 function showSuggestionForm(nif) {
-  result.innerHTML = `<div class="suggestion"><strong>Ajuda-nos a identificar esta empresa</strong><p>Não precisas de criar conta. Indica o nome que conheces e, se possível, uma fonte pública.</p><label>Nome público<input id="suggestName" maxlength="200" placeholder="Ex.: Café Central"></label><label>Fonte (opcional)<input id="suggestSource" type="url" maxlength="1000" placeholder="https://..."></label><button type="button" id="sendSuggestion">Enviar sugestão</button><div id="suggestStatus"></div></div>`;
+  result.innerHTML = `<div class="suggestion"><strong>Ajuda-nos a identificar esta empresa</strong><p>Na demo pública, a sugestão fica guardada apenas neste dispositivo. Na versão com API será enviada para revisão.</p><label>Nome público<input id="suggestName" maxlength="200" placeholder="Ex.: Café Central"></label><label>Fonte (opcional)<input id="suggestSource" type="url" maxlength="1000" placeholder="https://..."></label><button type="button" id="sendSuggestion">Guardar sugestão</button><div id="suggestStatus"></div></div>`;
   document.querySelector('#sendSuggestion').addEventListener('click', () => submitSuggestion(nif));
+}
+
+async function loadStaticCompanies() {
+  if (!STATIC_COMPANIES) {
+    const response = await fetch('./data/companies.json', { cache: 'no-store' });
+    if (!response.ok) throw new Error('Não foi possível carregar a base de demonstração.');
+    STATIC_COMPANIES = await response.json();
+  }
+  return STATIC_COMPANIES;
 }
 
 async function submitSuggestion(nif) {
@@ -62,13 +61,20 @@ async function submitSuggestion(nif) {
   const source_url = document.querySelector('#suggestSource').value.trim();
   const status = document.querySelector('#suggestStatus');
   if (!name) { status.textContent = 'Indica o nome público.'; return; }
-  status.textContent = 'A enviar…';
-  try {
-    const response = await fetch(`${API_BASE}/api/suggestions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nif, name, source_url }) });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'Não foi possível enviar.');
-    status.textContent = '✓ Obrigado! A sugestão ficou registada para revisão.';
-  } catch (error) { status.textContent = error.message; }
+  if (API_BASE) {
+    status.textContent = 'A enviar…';
+    try {
+      const response = await fetch(`${API_BASE}/api/suggestions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nif, name, source_url }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Não foi possível enviar.');
+      status.textContent = '✓ Obrigado! A sugestão ficou registada para revisão.';
+      return;
+    } catch (error) { status.textContent = error.message; return; }
+  }
+  const suggestions = JSON.parse(localStorage.getItem('nifNomeSuggestions') || '[]');
+  suggestions.push({ nif, name, source_url, created_at: new Date().toISOString() });
+  localStorage.setItem('nifNomeSuggestions', JSON.stringify(suggestions));
+  status.textContent = '✓ Guardada neste dispositivo. Esta é uma demo; a versão online enviará a sugestão para revisão.';
 }
 
 function renderSearchResults(payload) {
@@ -80,20 +86,36 @@ function renderSearchResults(payload) {
   result.innerHTML = `<div class="result-summary">${results.length} resultado(s)</div>${results.map(renderCompany).join('')}`;
 }
 
+function localSearch(companies, query) {
+  const normalized = query.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  return Object.values(companies).filter(company => {
+    const values = [company.nif, company.legalName, company.location, ...(company.publicNames || []).map(name => name.name)];
+    return values.some(value => String(value || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().includes(normalized));
+  });
+}
+
 async function search(query) {
   result.innerHTML = '<div class="empty">A pesquisar…</div>';
-  if (/^\d{9}$/.test(query)) {
-    const response = await fetch(`${API_BASE}/api/company/${encodeURIComponent(query)}`);
-    if (response.status === 404) { renderNotFound(query); return; }
+  if (API_BASE) {
+    if (/^\d{9}$/.test(query)) {
+      const response = await fetch(`${API_BASE}/api/company/${encodeURIComponent(query)}`);
+      if (response.status === 404) { renderNotFound(query); return; }
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Erro na pesquisa.');
+      result.innerHTML = renderCompany(data);
+      return;
+    }
+    const response = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(query)}`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Erro na pesquisa.');
-    result.innerHTML = renderCompany(data);
+    renderSearchResults(data);
     return;
   }
-  const response = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(query)}`);
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || 'Erro na pesquisa.');
-  renderSearchResults(data);
+
+  const companies = await loadStaticCompanies();
+  const results = localSearch(companies, query);
+  if (/^\d{9}$/.test(query) && !results.length) { renderNotFound(query); return; }
+  renderSearchResults({ results });
 }
 
 form.addEventListener('submit', async event => {
