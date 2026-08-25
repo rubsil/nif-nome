@@ -20,7 +20,7 @@
     button:hover { opacity: .9; }
     .hint { color: #7a8497; font-size: .9rem; margin: 10px 2px 0; }
     #result { margin-top: 18px; }
-    .result { border-top: 1px solid #e5e8ee; padding-top: 20px; }
+    .result { border-top: 1px solid #e5e8ee; padding-top: 20px; margin-top: 12px; }
     .public-name { font-size: 1.7rem; font-weight: 750; margin-bottom: 4px; }
     .legal { color: #667085; margin-bottom: 18px; }
     dl { display: grid; grid-template-columns: 110px 1fr; gap: 8px 16px; margin: 0; }
@@ -29,7 +29,13 @@
     .sources { margin-top: 18px; padding-top: 14px; border-top: 1px solid #e5e8ee; font-size: .9rem; }
     .sources a { color: inherit; }
     .empty { color: #687386; padding: 8px 0; }
-    .empty strong { display: block; color: #172033; margin-bottom: 5px; }
+    .empty strong { display: block; color: #172033; margin-bottom: 10px; }
+    .empty button { margin-top: 8px; min-height: 42px; }
+    .suggestion { border-top: 1px solid #e5e8ee; padding-top: 20px; display: grid; gap: 10px; }
+    .suggestion p { color: #687386; margin: 0 0 4px; font-size: .92rem; }
+    .suggestion label { display: grid; gap: 5px; font-size: .9rem; font-weight: 600; }
+    .suggestion button { min-height: 44px; }
+    #suggestStatus { color: #28653a; font-size: .9rem; }
     footer { text-align: center; color: #8992a3; font-size: .82rem; margin-top: 22px; }
     @media (max-width: 560px) { form { flex-direction: column; } button { min-height: 48px; } dl { grid-template-columns: 1fr; gap: 3px; } dd { margin-bottom: 8px; } }
   </style>
@@ -42,10 +48,10 @@
   </section>
   <section class="card">
     <form id="searchForm">
-      <input id="nif" name="nif" inputmode="numeric" autocomplete="off" maxlength="9" placeholder="Introduz o NIF (ex.: 512044821)" aria-label="NIF">
+      <input id="nif" name="nif" inputmode="text" autocomplete="off" maxlength="200" placeholder="NIF ou nome da empresa…" aria-label="NIF ou nome da empresa">
       <button type="submit">Pesquisar</button>
     </form>
-    <p class="hint">Pesquisa por NIF/NIPC. A base mostra as fontes e o nível de confiança.</p>
+    <p class="hint">Pesquisa por NIF, nome legal, nome comercial ou localização.</p>
     <div id="result" aria-live="polite"></div>
   </section>
   <footer>Projeto comunitário NIF → Nome · informação com fontes e evidências</footer>
