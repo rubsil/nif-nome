@@ -22,6 +22,11 @@ def _read_json(path: Path, default: Any) -> Any:
         return json.load(file)
 
 
+def _write_json(path: Path, value: Any) -> None:
+    with path.open("w", encoding="utf-8") as file:
+        json.dump(value, file, ensure_ascii=False, indent=2)
+
+
 def get_company(nif: str) -> dict | None:
     return _read_json(COMPANIES_FILE, {}).get(nif)
 
@@ -33,9 +38,24 @@ def list_companies() -> list[dict]:
 def add_suggestion(suggestion: dict) -> dict:
     suggestions = _read_json(SUGGESTIONS_FILE, [])
     suggestion = dict(suggestion)
-    suggestion["id"] = len(suggestions) + 1
+    suggestion["id"] = max((int(item.get("id", 0)) for item in suggestions), default=0) + 1
     suggestion["status"] = "pending"
     suggestions.append(suggestion)
-    with SUGGESTIONS_FILE.open("w", encoding="utf-8") as file:
-        json.dump(suggestions, file, ensure_ascii=False, indent=2)
+    _write_json(SUGGESTIONS_FILE, suggestions)
     return suggestion
+
+
+def list_pending_suggestions() -> list[dict]:
+    return [item for item in _read_json(SUGGESTIONS_FILE, []) if item.get("status") == "pending"]
+
+
+def review_suggestion(suggestion_id: int, decision: str) -> dict | None:
+    suggestions = _read_json(SUGGESTIONS_FILE, [])
+    for item in suggestions:
+        if int(item.get("id", 0)) != suggestion_id or item.get("status") != "pending":
+            continue
+        item["status"] = "approved" if decision == "approve" else "rejected"
+        item["reviewed_at"] = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+        _write_json(SUGGESTIONS_FILE, suggestions)
+        return item
+    return None
