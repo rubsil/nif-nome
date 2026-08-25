@@ -1,13 +1,7 @@
 export interface Env {
   DB: D1Database;
   ENVIRONMENT: string;
-}
-
-function json(data: unknown, init: ResponseInit = {}) {
-  return new Response(JSON.stringify(data), {
-    ...init,
-    headers: { "content-type": "application/json; charset=utf-8", ...(init.headers || {}), ...corsHeaders() },
-  });
+  ASSETS: Fetcher;
 }
 
 function corsHeaders() {
@@ -16,6 +10,13 @@ function corsHeaders() {
     "access-control-allow-methods": "GET,POST,OPTIONS",
     "access-control-allow-headers": "content-type",
   };
+}
+
+function json(data: unknown, init: ResponseInit = {}) {
+  return new Response(JSON.stringify(data), {
+    ...init,
+    headers: { "content-type": "application/json; charset=utf-8", ...(init.headers || {}), ...corsHeaders() },
+  });
 }
 
 function companyPayload(row: Record<string, unknown>) {
@@ -38,7 +39,7 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders() });
-    if (url.pathname === "/health") return json({ ok: true, environment: env.ENVIRONMENT });
+    if (url.pathname === "/health") return json({ ok: true, environment: env.ENVIRONMENT || "production" });
 
     if (url.pathname.startsWith("/api/company/") && request.method === "GET") {
       const nif = url.pathname.slice("/api/company/".length).replace(/\D/g, "");
@@ -70,6 +71,6 @@ export default {
       return json({ ok: true, status: "pending" }, { status: 201 });
     }
 
-    return json({ error: "Not found" }, { status: 404 });
+    return env.ASSETS.fetch(request);
   },
 };
