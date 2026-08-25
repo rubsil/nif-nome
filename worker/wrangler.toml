@@ -8,5 +8,5 @@ ENVIRONMENT = "production"
 [[d1_databases]]
 binding = "DB"
 database_name = "nif-nome"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "d300a891-5791-4a26-9204-cd962507c911"
 migrations_dir = "migrations"
