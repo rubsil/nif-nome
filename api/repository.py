@@ -1,12 +1,9 @@
-"""Storage abstraction for the API prototype.
-
-JSON remains the current backend. The API can use this module without knowing
-where records are stored, making the later PostgreSQL migration straightforward.
-"""
+"""Storage abstraction for the API prototype."""
 
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -51,11 +48,52 @@ def list_pending_suggestions() -> list[dict]:
 
 def review_suggestion(suggestion_id: int, decision: str) -> dict | None:
     suggestions = _read_json(SUGGESTIONS_FILE, [])
+    companies = _read_json(COMPANIES_FILE, {})
+    now = datetime.now(timezone.utc).isoformat()
+
     for item in suggestions:
         if int(item.get("id", 0)) != suggestion_id or item.get("status") != "pending":
             continue
-        item["status"] = "approved" if decision == "approve" else "rejected"
-        item["reviewed_at"] = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+
+        if decision == "approve":
+            nif = item["nif"]
+            company = companies.get(nif)
+            if company is None:
+                company = {
+                    "nif": nif,
+                    "legalName": "NIF identificado por contribuição comunitária",
+                    "publicNames": [],
+                    "location": None,
+                }
+                companies[nif] = company
+
+            normalized = item["name"].strip().casefold()
+            existing = next(
+                (name for name in company.get("publicNames", [])
+                 if name.get("name", "").strip().casefold() == normalized),
+                None,
+            )
+            if existing is None:
+                company.setdefault("publicNames", []).append({
+                    "name": item["name"].strip(),
+                    "type": "commercial",
+                    "confidence": 0.70,
+                    "sources": ([{"name": "Contribuição comunitária", "url": item["source_url"]}]
+                                if item.get("source_url") else []),
+                })
+            elif item.get("source_url"):
+                sources = existing.setdefault("sources", [])
+                if not any(source.get("url") == item["source_url"] for source in sources):
+                    sources.append({"name": "Contribuição comunitária", "url": item["source_url"]})
+
+            item["status"] = "approved"
+            item["published"] = True
+            _write_json(COMPANIES_FILE, companies)
+        else:
+            item["status"] = "rejected"
+            item["published"] = False
+
+        item["reviewed_at"] = now
         _write_json(SUGGESTIONS_FILE, suggestions)
         return item
     return None
