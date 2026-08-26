@@ -30,6 +30,10 @@
     .company-meta div { background: #f7f8fb; border-radius: 12px; padding: 12px 14px; }
     .company-meta span { display: block; color: #7b8495; font-size: .78rem; margin-bottom: 3px; }
     .company-meta strong { font-size: .95rem; }
+    .map-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .map-link { display: inline-block; color: #172033; font-size: .86rem; font-weight: 650; text-decoration: none; }
+    .map-link:hover { text-decoration: underline; }
+    .map-link.secondary { color: #58657a; font-weight: 600; }
     .public-name-card { border: 1px solid #e1e5ec; border-radius: 14px; padding: 16px; margin: 10px 0; }
     .public-name { font-size: 1.45rem; font-weight: 750; }
     .name-type { color: #7b8495; font-size: .82rem; margin-top: 2px; }
@@ -57,7 +61,7 @@
     .suggestion button { min-height: 44px; }
     #suggestStatus { color: #28653a; font-size: .9rem; min-height: 20px; }
     footer { text-align: center; color: #8992a3; font-size: .82rem; margin-top: 22px; }
-    @media (max-width: 560px) { form { flex-direction: column; } button { min-height: 48px; } .company-meta { grid-template-columns: 1fr; } .source-list li { display: grid; gap: 2px; } .source-list span { white-space: normal; } }
+    @media (max-width: 560px) { form { flex-direction: column; } button { min-height: 48px; } .company-meta { grid-template-columns: 1fr; } .source-list li { display: grid; gap: 2px; } .source-list span { white-space: normal; } .map-actions { display: grid; } }
   </style>
 </head>
 <body>
