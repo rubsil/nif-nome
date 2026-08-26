@@ -1,6 +1,7 @@
 import { findByNif as findByNifPt } from "./providers/nifpt";
 import { findByNif as findByVies } from "./providers/vies";
 import { findByNif as findByPublicacoes } from "./providers/publicacoes";
+import { findByNif as findByEInforma } from "./providers/einforma";
 
 export interface Env {
   DB: D1Database;
@@ -40,6 +41,13 @@ async function discoverWithVies(nif: string, env: Env) {
   await saveCompany(env, nif, found.legalName || "", null, location, 0.75);
   return { nif, legalName: found.legalName || null, publicName: null, location, address: location, website: null, activity: null, cae: null, source: "vies", requestDate: found.requestDate || null };
 }
+async function discoverWithEInforma(nif: string, env: Env) {
+  const found = await findByEInforma(nif);
+  if (!found) return null;
+  const location = found.address || null;
+  await saveCompany(env, nif, found.legalName || "", null, location, 0.72);
+  return { nif, legalName: found.legalName, publicName: null, location, address: location, website: found.website, activity: found.activity, cae: null, source: "eInforma", sourceUrl: found.sourceUrl };
+}
 async function discoverWithPublicacoes(nif: string, env: Env) {
   const found = await findByPublicacoes(nif);
   if (!found) return null;
@@ -49,6 +57,7 @@ async function discoverWithPublicacoes(nif: string, env: Env) {
   if (found.legalName || publicName) await saveCompany(env, nif, found.legalName || "", publicName, location, publicName ? 0.80 : 0.70);
   return { nif, legalName: found.legalName, publicName, location, address: found.address, website: null, activity: null, cae: null, source: "publicacoes.mj.pt", sourceUrl: found.sourceUrl, candidates };
 }
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -59,18 +68,56 @@ export default {
       if (nif.length !== 9) return json({ error: "NIF inválido." }, { status: 400 });
       const existing = await env.DB.prepare("SELECT * FROM companies WHERE nif = ? LIMIT 1").bind(nif).first<Record<string, unknown>>();
       if (existing) return json({ found: true, cached: true, company: companyPayload(existing) });
+
       const sourcesChecked: string[] = [];
       const providerErrors: Record<string, string> = {};
+      const providerResults: Record<string, string> = {};
+
       sourcesChecked.push("nif.pt");
-      try { const discovered = await discoverWithNifPt(nif, env); if (discovered) return json({ found: true, cached: false, company: discovered, sources_checked: sourcesChecked }); }
-      catch (error) { providerErrors["nif.pt"] = String(error).replace(/[\r\n]/g, " ").slice(0, 200); console.error(JSON.stringify({ event: "discovery_error", provider: "nif.pt", nif, error: providerErrors["nif.pt"] })); }
+      try {
+        const discovered = await discoverWithNifPt(nif, env);
+        providerResults["nif.pt"] = discovered ? "found" : "not_found";
+        if (discovered) return json({ found: true, cached: false, company: discovered, sources_checked: sourcesChecked, provider_results: providerResults });
+      } catch (error) {
+        providerResults["nif.pt"] = "error";
+        providerErrors["nif.pt"] = String(error).replace(/[\r\n]/g, " ").slice(0, 200);
+        console.error(JSON.stringify({ event: "discovery_error", provider: "nif.pt", nif, error: providerErrors["nif.pt"] }));
+      }
+
       sourcesChecked.push("vies");
-      try { const discovered = await discoverWithVies(nif, env); if (discovered) return json({ found: true, cached: false, company: discovered, sources_checked: sourcesChecked }); }
-      catch (error) { providerErrors["vies"] = String(error).replace(/[\r\n]/g, " ").slice(0, 200); console.error(JSON.stringify({ event: "discovery_error", provider: "vies", nif, error: providerErrors["vies"] })); }
+      try {
+        const discovered = await discoverWithVies(nif, env);
+        providerResults["vies"] = discovered ? "found" : "not_found";
+        if (discovered) return json({ found: true, cached: false, company: discovered, sources_checked: sourcesChecked, provider_results: providerResults });
+      } catch (error) {
+        providerResults["vies"] = "error";
+        providerErrors["vies"] = String(error).replace(/[\r\n]/g, " ").slice(0, 200);
+        console.error(JSON.stringify({ event: "discovery_error", provider: "vies", nif, error: providerErrors["vies"] }));
+      }
+
+      sourcesChecked.push("eInforma");
+      try {
+        const discovered = await discoverWithEInforma(nif, env);
+        providerResults["eInforma"] = discovered ? "found" : "not_found";
+        if (discovered) return json({ found: true, cached: false, company: discovered, sources_checked: sourcesChecked, provider_results: providerResults });
+      } catch (error) {
+        providerResults["eInforma"] = "error";
+        providerErrors["eInforma"] = String(error).replace(/[\r\n]/g, " ").slice(0, 200);
+        console.error(JSON.stringify({ event: "discovery_error", provider: "eInforma", nif, error: providerErrors["eInforma"] }));
+      }
+
       sourcesChecked.push("publicacoes.mj.pt");
-      try { const discovered = await discoverWithPublicacoes(nif, env); if (discovered) return json({ found: true, cached: false, company: discovered, sources_checked: sourcesChecked }); }
-      catch (error) { providerErrors["publicacoes.mj.pt"] = String(error).replace(/[\r\n]/g, " ").slice(0, 200); console.error(JSON.stringify({ event: "discovery_error", provider: "publicacoes.mj.pt", nif, error: providerErrors["publicacoes.mj.pt"] })); }
-      return json({ found: false, sources_checked: sourcesChecked, ...(Object.keys(providerErrors).length ? { provider_errors: providerErrors } : {}) });
+      try {
+        const discovered = await discoverWithPublicacoes(nif, env);
+        providerResults["publicacoes.mj.pt"] = discovered ? "found" : "not_found";
+        if (discovered) return json({ found: true, cached: false, company: discovered, sources_checked: sourcesChecked, provider_results: providerResults });
+      } catch (error) {
+        providerResults["publicacoes.mj.pt"] = "error";
+        providerErrors["publicacoes.mj.pt"] = String(error).replace(/[\r\n]/g, " ").slice(0, 200);
+        console.error(JSON.stringify({ event: "discovery_error", provider: "publicacoes.mj.pt", nif, error: providerErrors["publicacoes.mj.pt"] }));
+      }
+
+      return json({ found: false, sources_checked: sourcesChecked, provider_results: providerResults, ...(Object.keys(providerErrors).length ? { provider_errors: providerErrors } : {}) });
     }
     if (url.pathname.startsWith("/api/company/") && request.method === "GET") {
       const nif = url.pathname.slice("/api/company/".length).replace(/\D/g, "");
