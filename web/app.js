@@ -32,12 +32,9 @@ function mapsAddress(data) {
 }
 function mapsSearchUrl(query) { return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`; }
 function mapsUrl(data) {
-  const publicName = data.publicNames?.[0]?.name || '';
-  const address = mapsAddress(data);
-  // Prefer the exact address when there is no confirmed public name. This makes Maps
-  // search for the building/address rather than a generic company name.
-  const query = publicName ? `${normalizeMapsText(publicName)}, ${address}` : address;
-  return mapsSearchUrl(query);
+  // Do not include a guessed public name. The registered address is the reliable clue;
+  // an incorrect candidate can send Maps to a completely different establishment.
+  return mapsSearchUrl(mapsAddress(data));
 }
 function nearbyMapsUrl(data, category = '') {
   const address = mapsAddress(data);
