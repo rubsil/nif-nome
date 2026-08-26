@@ -33,7 +33,7 @@ function companyPayload(row: Record<string, unknown>) {
 }
 
 async function discoverWithNifPt(nif: string, env: Env) {
-  if (!env.NIFPT_API_KEY) return null;
+  if (!env.NIFPT_API_KEY) throw new Error("API key não configurada no Worker");
   const found = await findByNif(nif, env.NIFPT_API_KEY);
   if (!found) return null;
   const r = found.record;
@@ -67,8 +67,9 @@ export default {
         const discovered = await discoverWithNifPt(nif, env);
         if (discovered) return json({ found: true, cached: false, company: discovered });
       } catch (error) {
-        console.error(JSON.stringify({ event: "discovery_error", provider: "nif.pt", nif, error: String(error) }));
-        return json({ found: false, error: "A fonte de descoberta não está disponível neste momento." }, { status: 502 });
+        const message = String(error).replace(/[\r\n]/g, " ").slice(0, 200);
+        console.error(JSON.stringify({ event: "discovery_error", provider: "nif.pt", nif, error: message }));
+        return json({ found: false, sources_checked: ["nif.pt"], provider_error: message }, { status: 502 });
       }
       return json({ found: false, sources_checked: ["nif.pt"] });
     }
