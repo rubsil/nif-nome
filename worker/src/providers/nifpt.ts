@@ -30,15 +30,22 @@ export async function findByNif(nif: string, apiKey: string): Promise<NifPtResul
     headers: { accept: "application/json" },
   });
 
-  if (!response.ok) throw new Error(`NIF.pt HTTP ${response.status}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
   const payload = await response.json<{
     result?: string;
     records?: Record<string, NifPtRecord>;
     is_nif?: boolean;
+    error?: string;
+    message?: string;
   }>();
 
+  if (payload.result !== "success") {
+    const reason = payload.error || payload.message || `result=${payload.result || "missing"}`;
+    throw new Error(`API ${reason}`);
+  }
+
   const record = payload.records?.[nif];
-  if (payload.result !== "success" || !record) return null;
+  if (!record) return null;
   return { source: "nif.pt", record };
 }
