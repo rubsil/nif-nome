@@ -1,4 +1,5 @@
-import { findByNif } from "./providers/nifpt";
+import { findByNif as findByNifPt } from "./providers/nifpt";
+import { findByNif as findByVies } from "./providers/vies";
 
 export interface Env {
   DB: D1Database;
@@ -32,24 +33,35 @@ function companyPayload(row: Record<string, unknown>) {
   };
 }
 
-async function discoverWithNifPt(nif: string, env: Env) {
-  if (!env.NIFPT_API_KEY) throw new Error("API key não configurada no Worker");
-  const found = await findByNif(nif, env.NIFPT_API_KEY);
-  if (!found) return null;
-  const r = found.record;
-  const location = r.place?.city || r.city || r.geo?.county || null;
-  const publicName = r.alias || null;
-
+async function saveCompany(env: Env, nif: string, legalName: string, publicName: string | null, location: string | null, confidence: number) {
   await env.DB.prepare(
     `INSERT INTO companies (nif, legal_name, public_name, location, confidence)
      VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(nif) DO UPDATE SET
-       legal_name = excluded.legal_name,
+       legal_name = CASE WHEN companies.legal_name = '' THEN excluded.legal_name ELSE companies.legal_name END,
        public_name = COALESCE(excluded.public_name, companies.public_name),
-       location = COALESCE(excluded.location, companies.location)`
-  ).bind(nif, r.title || "", publicName, location, publicName ? 0.85 : 0).run();
+       location = COALESCE(excluded.location, companies.location),
+       confidence = MAX(companies.confidence, excluded.confidence)`
+  ).bind(nif, legalName, publicName, location, confidence).run();
+}
 
+async function discoverWithNifPt(nif: string, env: Env) {
+  if (!env.NIFPT_API_KEY) throw new Error("API key não configurada no Worker");
+  const found = await findByNifPt(nif, env.NIFPT_API_KEY);
+  if (!found) return null;
+  const r = found.record;
+  const location = r.place?.city || r.city || r.geo?.county || null;
+  const publicName = r.alias || null;
+  await saveCompany(env, nif, r.title || "", publicName, location, publicName ? 0.85 : 0.65);
   return { nif, legalName: r.title || null, publicName, location, website: r.contacts?.website || null, activity: r.activity || null, cae: r.cae || null, source: "nif.pt" };
+}
+
+async function discoverWithVies(nif: string, env: Env) {
+  const found = await findByVies(nif);
+  if (!found) return null;
+  const location = found.address || null;
+  await saveCompany(env, nif, found.legalName || "", null, location, 0.75);
+  return { nif, legalName: found.legalName || null, publicName: null, location, website: null, activity: null, cae: null, source: "vies", requestDate: found.requestDate || null };
 }
 
 export default {
@@ -63,15 +75,31 @@ export default {
       if (nif.length !== 9) return json({ error: "NIF inválido." }, { status: 400 });
       const existing = await env.DB.prepare("SELECT * FROM companies WHERE nif = ? LIMIT 1").bind(nif).first<Record<string, unknown>>();
       if (existing) return json({ found: true, cached: true, company: companyPayload(existing) });
+
+      const sourcesChecked: string[] = [];
+      const providerErrors: Record<string, string> = {};
+
+      // 1. NIF.pt — primary source
+      sourcesChecked.push("nif.pt");
       try {
         const discovered = await discoverWithNifPt(nif, env);
-        if (discovered) return json({ found: true, cached: false, company: discovered });
+        if (discovered) return json({ found: true, cached: false, company: discovered, sources_checked: sourcesChecked });
       } catch (error) {
-        const message = String(error).replace(/[\r\n]/g, " ").slice(0, 200);
-        console.error(JSON.stringify({ event: "discovery_error", provider: "nif.pt", nif, error: message }));
-        return json({ found: false, sources_checked: ["nif.pt"], provider_error: message }, { status: 502 });
+        providerErrors["nif.pt"] = String(error).replace(/[\r\n]/g, " ").slice(0, 200);
+        console.error(JSON.stringify({ event: "discovery_error", provider: "nif.pt", nif, error: providerErrors["nif.pt"] }));
       }
-      return json({ found: false, sources_checked: ["nif.pt"] });
+
+      // 2. VIES — free European Commission fallback
+      sourcesChecked.push("vies");
+      try {
+        const discovered = await discoverWithVies(nif, env);
+        if (discovered) return json({ found: true, cached: false, company: discovered, sources_checked: sourcesChecked });
+      } catch (error) {
+        providerErrors["vies"] = String(error).replace(/[\r\n]/g, " ").slice(0, 200);
+        console.error(JSON.stringify({ event: "discovery_error", provider: "vies", nif, error: providerErrors["vies"] }));
+      }
+
+      return json({ found: false, sources_checked: sourcesChecked, ...(Object.keys(providerErrors).length ? { provider_errors: providerErrors } : {}) });
     }
 
     if (url.pathname.startsWith("/api/company/") && request.method === "GET") {
