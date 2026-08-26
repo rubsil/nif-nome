@@ -11,21 +11,44 @@ function renderPublicName(name) {
   const sourceHtml = sources.length ? `<ul class="source-list">${sources.map(source => `<li><a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(source.name)}</a><span>${escapeHtml(sourceTypeLabel(source.source_type))}</span></li>`).join('')}</ul>` : '<p class="muted">Ainda sem fontes públicas associadas.</p>';
   return `<article class="public-name-card"><div class="public-name">${escapeHtml(name.name)}</div><div class="name-type">${escapeHtml(name.type || 'nome público')}</div><div class="confidence-row"><span class="confidence ${info.className}">✓ ${info.label}</span><strong>${Math.round(confidence * 100)}%</strong></div><div class="sources"><strong>Fontes e evidências</strong>${sourceHtml}</div></article>`;
 }
+function normalizeMapsText(value) {
+  return String(value || '')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/\bCódigo Postal\s*:\s*/gi, '')
+    .normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\u0000-\u001f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 function extractPostalCode(value) { const match = String(value || '').match(/\b\d{4}-\d{3}\b/); return match ? match[0] : ''; }
+function mapsAddress(data) {
+  const raw = data.address || data.location || '';
+  const normalized = normalizeMapsText(raw);
+  const postalCode = data.postalCode || extractPostalCode(raw) || extractPostalCode(data.location);
+  let address = normalized.replace(/\s*,?\s*Portugal\s*$/i, '').trim();
+  if (postalCode && !address.includes(postalCode)) address = `${address}, ${postalCode}`;
+  return `${address}, Portugal`.replace(/,\s*,/g, ',');
+}
+function mapsSearchUrl(query) { return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`; }
 function mapsUrl(data) {
-  const names = data.publicNames ?? [];
-  const publicName = names[0]?.name || '';
-  const address = data.address || data.location || '';
-  const postalCode = data.postalCode || extractPostalCode(address) || extractPostalCode(data.location);
-  const parts = [publicName, address, postalCode, data.location, 'Portugal'].filter(Boolean);
-  const query = [...new Set(parts)].join(', ');
-  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+  const publicName = data.publicNames?.[0]?.name || '';
+  const address = mapsAddress(data);
+  // Prefer the exact address when there is no confirmed public name. This makes Maps
+  // search for the building/address rather than a generic company name.
+  const query = publicName ? `${normalizeMapsText(publicName)}, ${address}` : address;
+  return mapsSearchUrl(query);
+}
+function nearbyMapsUrl(data, category = '') {
+  const address = mapsAddress(data);
+  const type = category || (/(restaurante|pizzaria|bar|cafe|caf[eé]|bebidas|561|562|563)/i.test(String(data.activity || '')) ? 'restaurantes' : 'estabelecimentos');
+  return mapsSearchUrl(`${type} perto de ${address}`);
 }
 function renderCompany(data) {
   const names = data.publicNames ?? []; const primary = names[0]; const address = data.address || data.location;
   const displayName = primary?.name || data.legalName || 'Empresa identificada';
-  const addressHtml = address ? `<div><span>Morada registada</span><strong>${escapeHtml(address)}</strong><a class="map-link" href="${mapsUrl(data)}" target="_blank" rel="noopener noreferrer">📍 Abrir no Google Maps</a></div>` : `<div><span>Localização</span><strong>${escapeHtml(data.location || '—')}</strong></div>`;
-  return `<div class="company-profile"><header class="company-header"><div class="eyebrow">Empresa identificada</div><h2>${escapeHtml(displayName)}</h2>${primary && data.legalName ? `<p class="legal">${escapeHtml(data.legalName)}</p>` : ''}</header><div class="company-meta"><div><span>NIF</span><strong>${escapeHtml(data.nif)}</strong></div>${addressHtml}</div><section><h3>Nomes conhecidos</h3>${names.length ? names.map(renderPublicName).join('') : `<div class="empty"><strong>${escapeHtml(data.legalName || 'Denominação legal identificada')}</strong><p>Ainda não temos um nome público/comercial confirmado para esta empresa.</p></div>`}</section><div class="profile-note">A denominação social e o nome pelo qual o estabelecimento é conhecido podem ser diferentes. As associações são apresentadas com as fontes disponíveis.</div></div>`;
+  const addressHtml = address ? `<div><span>Morada registada</span><strong>${escapeHtml(address)}</strong><div class="map-actions"><a class="map-link" href="${mapsUrl(data)}" target="_blank" rel="noopener noreferrer">📍 Ver esta morada no Google Maps</a><a class="map-link secondary" href="${nearbyMapsUrl(data)}" target="_blank" rel="noopener noreferrer">🔎 Ver estabelecimentos perto daqui</a></div></div>` : `<div><span>Localização</span><strong>${escapeHtml(data.location || '—')}</strong></div>`;
+  return `<div class="company-profile"><header class="company-header"><div class="eyebrow">Empresa identificada</div><h2>${escapeHtml(displayName)}</h2>${primary && data.legalName ? `<p class="legal">${escapeHtml(data.legalName)}</p>` : ''}</header><div class="company-meta"><div><span>NIF</span><strong>${escapeHtml(data.nif)}</strong></div>${addressHtml}</div><section><h3>Nomes conhecidos</h3>${names.length ? names.map(renderPublicName).join('') : `<div class="empty"><strong>${escapeHtml(data.legalName || 'Denominação legal identificada')}</strong><p>Ainda não temos um nome público/comercial confirmado para esta empresa.</p></div>`}</section><div class="profile-note">A denominação social e o nome pelo qual o estabelecimento é conhecido podem ser diferentes. As associações são apresentadas com as fontes disponíveis. Se não houver nome comercial confirmado, a morada pode ajudar a reconhecer o estabelecimento no Google Maps.</div></div>`;
 }
 function renderNotFound(nif) { result.innerHTML = `<div class="empty"><strong>NIF ${escapeHtml(nif)} não foi identificado automaticamente.</strong><p>Consultámos as fontes disponíveis. Se souberes o nome, podes ajudar a completar a base.</p><button type="button" id="suggestButton">Conheço o nome desta empresa</button></div>`; document.querySelector('#suggestButton').addEventListener('click', () => showSuggestionForm(nif)); }
 function showSuggestionForm(nif) { result.innerHTML = `<div class="suggestion"><strong>Ajuda-nos a identificar esta empresa</strong><p>A tua sugestão ficará registada para revisão.</p><label>Nome público<input id="suggestName" maxlength="200" placeholder="Ex.: Café Central"></label><label>Fonte (opcional)<input id="suggestSource" type="url" maxlength="1000" placeholder="https://..."></label><button type="button" id="sendSuggestion">Guardar sugestão</button><div id="suggestStatus"></div></div>`; document.querySelector('#sendSuggestion').addEventListener('click', () => submitSuggestion(nif)); }
