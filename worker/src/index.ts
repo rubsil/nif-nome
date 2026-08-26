@@ -31,31 +31,33 @@ async function discoverWithNifPt(nif: string, env: Env) {
   const address = r.address || r.place?.address || null;
   const location = address || r.place?.city || r.city || r.geo?.county || null;
   const publicName = r.alias || null;
-  await saveCompany(env, nif, r.title || "", publicName, location, publicName ? 0.85 : 0.65);
   return { nif, legalName: r.title || null, publicName, location, address, website: r.contacts?.website || null, activity: r.activity || null, cae: r.cae || null, source: "nif.pt" };
 }
-async function discoverWithVies(nif: string, env: Env) {
+async function discoverWithVies(nif: string) {
   const found = await findByVies(nif);
   if (!found) return null;
   const location = found.address || null;
-  await saveCompany(env, nif, found.legalName || "", null, location, 0.75);
   return { nif, legalName: found.legalName || null, publicName: null, location, address: location, website: null, activity: null, cae: null, source: "vies", requestDate: found.requestDate || null };
 }
-async function discoverWithEInforma(nif: string, env: Env) {
+async function discoverWithEInforma(nif: string) {
   const found = await findByEInforma(nif);
   if (!found) return null;
+  const publicName = found.publicNames[0] || null;
   const location = found.address || null;
-  await saveCompany(env, nif, found.legalName || "", null, location, 0.72);
-  return { nif, legalName: found.legalName, publicName: null, location, address: location, website: found.website, activity: found.activity, cae: null, source: "eInforma", sourceUrl: found.sourceUrl };
+  return { nif, legalName: found.legalName, publicName, publicNames: found.publicNames.map(name => ({ name, type: "nome comercial", confidence: 0.78, sources: [{ name: "eInforma", source_type: "directory", url: found.sourceUrl }] })), location, address: found.address, website: found.website, activity: found.activity, cae: null, source: "eInforma", sourceUrl: found.sourceUrl };
 }
-async function discoverWithPublicacoes(nif: string, env: Env) {
+async function discoverWithPublicacoes(nif: string) {
   const found = await findByPublicacoes(nif);
   if (!found) return null;
   const candidates = found.publicNames.filter(name => name.replace(/\s+/g, " ").trim().length > 2);
   const publicName = candidates[0] || null;
   const location = found.address || null;
-  if (found.legalName || publicName) await saveCompany(env, nif, found.legalName || "", publicName, location, publicName ? 0.80 : 0.70);
-  return { nif, legalName: found.legalName, publicName, location, address: found.address, website: null, activity: null, cae: null, source: "publicacoes.mj.pt", sourceUrl: found.sourceUrl, candidates };
+  return { nif, legalName: found.legalName, publicName, publicNames: candidates.map(name => ({ name, type: "nome público", confidence: 0.80, sources: [{ name: "Publicações do Ministério da Justiça", source_type: "government", url: found.sourceUrl }] })), location, address: found.address, website: null, activity: null, cae: null, source: "publicacoes.mj.pt", sourceUrl: found.sourceUrl, candidates };
+}
+function enrichWithPublicNames(base: any, discovered: any) {
+  const names = discovered.publicNames || (discovered.publicName ? [{ name: discovered.publicName, type: "nome comercial", confidence: 0.78, sources: [] }] : []);
+  if (!names.length) return base;
+  return { ...base, publicNames: names, publicName: names[0].name };
 }
 
 export default {
@@ -72,12 +74,16 @@ export default {
       const sourcesChecked: string[] = [];
       const providerErrors: Record<string, string> = {};
       const providerResults: Record<string, string> = {};
+      let base: any = null;
 
       sourcesChecked.push("nif.pt");
       try {
-        const discovered = await discoverWithNifPt(nif, env);
-        providerResults["nif.pt"] = discovered ? "found" : "not_found";
-        if (discovered) return json({ found: true, cached: false, company: discovered, sources_checked: sourcesChecked, provider_results: providerResults });
+        base = await discoverWithNifPt(nif, env);
+        providerResults["nif.pt"] = base ? "found" : "not_found";
+        if (base?.publicName) {
+          await saveCompany(env, nif, base.legalName || "", base.publicName, base.location, 0.85);
+          return json({ found: true, cached: false, company: base, sources_checked: sourcesChecked, provider_results: providerResults });
+        }
       } catch (error) {
         providerResults["nif.pt"] = "error";
         providerErrors["nif.pt"] = String(error).replace(/[\r\n]/g, " ").slice(0, 200);
@@ -86,35 +92,41 @@ export default {
 
       sourcesChecked.push("vies");
       try {
-        const discovered = await discoverWithVies(nif, env);
+        const discovered = await discoverWithVies(nif);
         providerResults["vies"] = discovered ? "found" : "not_found";
-        if (discovered) return json({ found: true, cached: false, company: discovered, sources_checked: sourcesChecked, provider_results: providerResults });
+        if (!base && discovered) base = discovered;
+        else if (base && discovered?.legalName && !base.legalName) base = { ...base, legalName: discovered.legalName };
       } catch (error) {
         providerResults["vies"] = "error";
         providerErrors["vies"] = String(error).replace(/[\r\n]/g, " ").slice(0, 200);
-        console.error(JSON.stringify({ event: "discovery_error", provider: "vies", nif, error: providerErrors["vies"] }));
       }
 
       sourcesChecked.push("eInforma");
       try {
-        const discovered = await discoverWithEInforma(nif, env);
+        const discovered = await discoverWithEInforma(nif);
         providerResults["eInforma"] = discovered ? "found" : "not_found";
-        if (discovered) return json({ found: true, cached: false, company: discovered, sources_checked: sourcesChecked, provider_results: providerResults });
+        if (discovered?.publicNames?.length) base = enrichWithPublicNames(base || discovered, discovered);
+        else if (!base && discovered) base = discovered;
       } catch (error) {
         providerResults["eInforma"] = "error";
         providerErrors["eInforma"] = String(error).replace(/[\r\n]/g, " ").slice(0, 200);
-        console.error(JSON.stringify({ event: "discovery_error", provider: "eInforma", nif, error: providerErrors["eInforma"] }));
       }
 
       sourcesChecked.push("publicacoes.mj.pt");
       try {
-        const discovered = await discoverWithPublicacoes(nif, env);
+        const discovered = await discoverWithPublicacoes(nif);
         providerResults["publicacoes.mj.pt"] = discovered ? "found" : "not_found";
-        if (discovered) return json({ found: true, cached: false, company: discovered, sources_checked: sourcesChecked, provider_results: providerResults });
+        if (discovered?.publicNames?.length) base = enrichWithPublicNames(base || discovered, discovered);
+        else if (!base && discovered) base = discovered;
       } catch (error) {
         providerResults["publicacoes.mj.pt"] = "error";
         providerErrors["publicacoes.mj.pt"] = String(error).replace(/[\r\n]/g, " ").slice(0, 200);
-        console.error(JSON.stringify({ event: "discovery_error", provider: "publicacoes.mj.pt", nif, error: providerErrors["publicacoes.mj.pt"] }));
+      }
+
+      if (base) {
+        const names = base.publicNames || (base.publicName ? [{ name: base.publicName, type: "nome comercial", confidence: 0.85, sources: [] }] : []);
+        await saveCompany(env, nif, base.legalName || "", names[0]?.name || null, base.location || base.address || null, names.length ? Number(names[0].confidence) || 0.78 : 0.65);
+        return json({ found: true, cached: false, company: { ...base, publicNames: names }, sources_checked: sourcesChecked, provider_results: providerResults });
       }
 
       return json({ found: false, sources_checked: sourcesChecked, provider_results: providerResults, ...(Object.keys(providerErrors).length ? { provider_errors: providerErrors } : {}) });
