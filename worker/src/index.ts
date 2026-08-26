@@ -1,5 +1,6 @@
 import { findByNif as findByNifPt } from "./providers/nifpt";
 import { findByNif as findByVies } from "./providers/vies";
+import { findByNif as findByPublicacoes } from "./providers/publicacoes";
 
 export interface Env {
   DB: D1Database;
@@ -25,10 +26,13 @@ function json(data: unknown, init: ResponseInit = {}) {
 
 function companyPayload(row: Record<string, unknown>) {
   const confidence = Number(row.confidence) || 0;
+  const address = row.address || row.location || null;
   return {
     nif: row.nif,
     legalName: row.legal_name,
     location: row.location,
+    address,
+    website: row.website || null,
     publicNames: row.public_name ? [{ name: row.public_name, type: "nome comercial", confidence, sources: [] }] : [],
   };
 }
@@ -53,7 +57,7 @@ async function discoverWithNifPt(nif: string, env: Env) {
   const location = r.place?.city || r.city || r.geo?.county || null;
   const publicName = r.alias || null;
   await saveCompany(env, nif, r.title || "", publicName, location, publicName ? 0.85 : 0.65);
-  return { nif, legalName: r.title || null, publicName, location, website: r.contacts?.website || null, activity: r.activity || null, cae: r.cae || null, source: "nif.pt" };
+  return { nif, legalName: r.title || null, publicName, location, address: r.address || r.place?.address || null, website: r.contacts?.website || null, activity: r.activity || null, cae: r.cae || null, source: "nif.pt" };
 }
 
 async function discoverWithVies(nif: string, env: Env) {
@@ -61,7 +65,30 @@ async function discoverWithVies(nif: string, env: Env) {
   if (!found) return null;
   const location = found.address || null;
   await saveCompany(env, nif, found.legalName || "", null, location, 0.75);
-  return { nif, legalName: found.legalName || null, publicName: null, location, website: null, activity: null, cae: null, source: "vies", requestDate: found.requestDate || null };
+  return { nif, legalName: found.legalName || null, publicName: null, location, address: location, website: null, activity: null, cae: null, source: "vies", requestDate: found.requestDate || null };
+}
+
+async function discoverWithPublicacoes(nif: string, env: Env) {
+  const found = await findByPublicacoes(nif);
+  if (!found) return null;
+  const candidates = found.publicNames.filter(name => name.replace(/\s+/g, " ").trim().length > 2);
+  const publicName = candidates[0] || null;
+  if (found.legalName || publicName) {
+    await saveCompany(env, nif, found.legalName || "", publicName, found.address || null, publicName ? 0.80 : 0.70);
+  }
+  return {
+    nif,
+    legalName: found.legalName,
+    publicName,
+    location: found.address,
+    address: found.address,
+    website: null,
+    activity: null,
+    cae: null,
+    source: "publicacoes.mj.pt",
+    sourceUrl: found.sourceUrl,
+    candidates,
+  };
 }
 
 export default {
@@ -79,7 +106,6 @@ export default {
       const sourcesChecked: string[] = [];
       const providerErrors: Record<string, string> = {};
 
-      // 1. NIF.pt — primary source
       sourcesChecked.push("nif.pt");
       try {
         const discovered = await discoverWithNifPt(nif, env);
@@ -89,7 +115,6 @@ export default {
         console.error(JSON.stringify({ event: "discovery_error", provider: "nif.pt", nif, error: providerErrors["nif.pt"] }));
       }
 
-      // 2. VIES — free European Commission fallback
       sourcesChecked.push("vies");
       try {
         const discovered = await discoverWithVies(nif, env);
@@ -97,6 +122,15 @@ export default {
       } catch (error) {
         providerErrors["vies"] = String(error).replace(/[\r\n]/g, " ").slice(0, 200);
         console.error(JSON.stringify({ event: "discovery_error", provider: "vies", nif, error: providerErrors["vies"] }));
+      }
+
+      sourcesChecked.push("publicacoes.mj.pt");
+      try {
+        const discovered = await discoverWithPublicacoes(nif, env);
+        if (discovered) return json({ found: true, cached: false, company: discovered, sources_checked: sourcesChecked });
+      } catch (error) {
+        providerErrors["publicacoes.mj.pt"] = String(error).replace(/[\r\n]/g, " ").slice(0, 200);
+        console.error(JSON.stringify({ event: "discovery_error", provider: "publicacoes.mj.pt", nif, error: providerErrors["publicacoes.mj.pt"] }));
       }
 
       return json({ found: false, sources_checked: sourcesChecked, ...(Object.keys(providerErrors).length ? { provider_errors: providerErrors } : {}) });
