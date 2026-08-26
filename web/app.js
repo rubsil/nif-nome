@@ -11,11 +11,20 @@ function renderPublicName(name) {
   const sourceHtml = sources.length ? `<ul class="source-list">${sources.map(source => `<li><a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(source.name)}</a><span>${escapeHtml(sourceTypeLabel(source.source_type))}</span></li>`).join('')}</ul>` : '<p class="muted">Ainda sem fontes públicas associadas.</p>';
   return `<article class="public-name-card"><div class="public-name">${escapeHtml(name.name)}</div><div class="name-type">${escapeHtml(name.type || 'nome público')}</div><div class="confidence-row"><span class="confidence ${info.className}">✓ ${info.label}</span><strong>${Math.round(confidence * 100)}%</strong></div><div class="sources"><strong>Fontes e evidências</strong>${sourceHtml}</div></article>`;
 }
-function mapsUrl(address) { return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`; }
+function extractPostalCode(value) { const match = String(value || '').match(/\b\d{4}-\d{3}\b/); return match ? match[0] : ''; }
+function mapsUrl(data) {
+  const names = data.publicNames ?? [];
+  const publicName = names[0]?.name || '';
+  const address = data.address || data.location || '';
+  const postalCode = data.postalCode || extractPostalCode(address) || extractPostalCode(data.location);
+  const parts = [publicName, address, postalCode, data.location, 'Portugal'].filter(Boolean);
+  const query = [...new Set(parts)].join(', ');
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+}
 function renderCompany(data) {
   const names = data.publicNames ?? []; const primary = names[0]; const address = data.address || data.location;
   const displayName = primary?.name || data.legalName || 'Empresa identificada';
-  const addressHtml = address ? `<div><span>Morada registada</span><strong>${escapeHtml(address)}</strong><a class="map-link" href="${mapsUrl(address)}" target="_blank" rel="noopener noreferrer">📍 Abrir no Google Maps</a></div>` : `<div><span>Localização</span><strong>${escapeHtml(data.location || '—')}</strong></div>`;
+  const addressHtml = address ? `<div><span>Morada registada</span><strong>${escapeHtml(address)}</strong><a class="map-link" href="${mapsUrl(data)}" target="_blank" rel="noopener noreferrer">📍 Abrir no Google Maps</a></div>` : `<div><span>Localização</span><strong>${escapeHtml(data.location || '—')}</strong></div>`;
   return `<div class="company-profile"><header class="company-header"><div class="eyebrow">Empresa identificada</div><h2>${escapeHtml(displayName)}</h2>${primary && data.legalName ? `<p class="legal">${escapeHtml(data.legalName)}</p>` : ''}</header><div class="company-meta"><div><span>NIF</span><strong>${escapeHtml(data.nif)}</strong></div>${addressHtml}</div><section><h3>Nomes conhecidos</h3>${names.length ? names.map(renderPublicName).join('') : `<div class="empty"><strong>${escapeHtml(data.legalName || 'Denominação legal identificada')}</strong><p>Ainda não temos um nome público/comercial confirmado para esta empresa.</p></div>`}</section><div class="profile-note">A denominação social e o nome pelo qual o estabelecimento é conhecido podem ser diferentes. As associações são apresentadas com as fontes disponíveis.</div></div>`;
 }
 function renderNotFound(nif) { result.innerHTML = `<div class="empty"><strong>NIF ${escapeHtml(nif)} não foi identificado automaticamente.</strong><p>Consultámos as fontes disponíveis. Se souberes o nome, podes ajudar a completar a base.</p><button type="button" id="suggestButton">Conheço o nome desta empresa</button></div>`; document.querySelector('#suggestButton').addEventListener('click', () => showSuggestionForm(nif)); }
