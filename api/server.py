@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
-from routes import admin_candidate_review, admin_candidates, admin_review, admin_suggestions, create_candidate, create_suggestion, lookup, search
+from .routes import admin_candidate_review, admin_candidates, admin_review, admin_suggestions, create_candidate, create_suggestion, lookup, search
 
 class Handler(BaseHTTPRequestHandler):
     def send_json(self, status: int, payload: dict | list) -> None:

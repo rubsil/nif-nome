@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from confidence import confidence_for_sources
+from .confidence import confidence_for_sources
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPANIES_FILE = ROOT / "web" / "data" / "companies.json"

@@ -5,22 +5,17 @@
     "publicNames": [
       {
         "name": "FARMÁCIA CORREA",
-        "type": "commercial",
-        "confidence": 0.99,
-        "sources": [
+        "name_type": "commercial",
+        "confidence": 0.85,
+        "evidence": [
           {
-            "name": "Empresite",
-            "url": "https://empresite.jornaldenegocios.pt/SOUSA-SILVA.html",
-            "source_type": "directory"
-          },
-          {
-            "name": "Governo dos Açores",
-            "url": "https://portal.azores.gov.pt/documents/37408/966641/FarmciasePostosdeMedicamentosdaRAA03032020.pdf/e4f70b1a-0577-22c9-0669-0d79cd4a8de7?t=1597340115833",
-            "source_type": "government"
+            "source_name": "Empresite",
+            "source_url": "https://empresite.jornaldenegocios.pt/SOUSA-SILVA.html",
+            "note": "Ficha empresarial apresenta a designação comercial FARMÁCIA CORREA."
           }
         ]
       }
     ],
-    "location": "Horta, Açores"
+    "location": null
   }
 }

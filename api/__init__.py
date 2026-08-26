@@ -1,0 +1,1 @@
+"""NIF → Nome API package."""
