@@ -34,10 +34,29 @@ function extractLabeled(text: string, label: string): string | null {
   return cleanValue(text.match(re)?.[1] || null);
 }
 
+// Category pages contain many company cards. Only inspect the small card that
+// belongs to the requested legal name, rather than scanning the whole page.
+function extractCategoryCard(text: string, legalName: string): string | null {
+  const normalText = keyOf(text);
+  const needle = keyOf(legalName);
+  const index = normalText.indexOf(needle);
+  if (index < 0) return null;
+  const card = text.slice(index, Math.min(text.length, index + 1400));
+  const match = card.match(/Designa(?:ção|cao)\s+comercial\s*:\s*([^.!?\n]{3,140}?)(?=\s+(?:Ver empresa|Ver no Mapa|Matches in the search|Activity categories|$))/i);
+  return validName(match?.[1] || null, legalName);
+}
+
 function extractFromPage(text: string, nif: string, legalName: string | null, sourceUrl: string): EmpresiteResult | null {
   const hasNif = text.includes(nif);
   const hasLegalName = !!legalName && keyOf(text).includes(keyOf(legalName));
   if (!hasNif && !hasLegalName) return null;
+
+  // On category pages the company NIF is normally absent, but the legal name
+  // and its explicit commercial designation are in the same result card.
+  if (legalName) {
+    const categoryName = extractCategoryCard(text, legalName);
+    if (categoryName) return { source: "empresite", legalName, publicNames: [categoryName], address: null, sourceUrl };
+  }
 
   const publicName = validName(extractLabeled(text, "Designação\\s+comercial"), legalName);
   const address = extractLabeled(text, "Morada");
@@ -120,8 +139,6 @@ function buildDirectCategoryUrls(legalName: string | null): string[] {
   if (!legalName) return [];
   const n = keyOf(legalName);
   const urls: string[] = [];
-  // Empresite exposes stable activity/category pages. These are especially useful
-  // when search engines do not index the individual company page yet.
   if (/pizzaria|pizza/.test(n)) urls.push("https://empresite.jornaldenegocios.pt/Actividade/PIZZARIA/");
   if (/restaurante|restauracao|restaura/.test(n)) urls.push("https://empresite.jornaldenegocios.pt/Actividade/RESTAURANTE/");
   if (/farmacia/.test(n)) urls.push("https://empresite.jornaldenegocios.pt/Actividade/FARMACIA/");
@@ -141,9 +158,6 @@ async function fetchPage(url: string): Promise<string | null> {
 
 export async function findByNif(nif: string, legalName: string | null): Promise<EmpresiteResult | null> {
   const visited = new Set<string>();
-
-  // First use deterministic Empresite category pages. Unlike web-search snippets,
-  // these pages contain the company card and its explicit "Designação comercial".
   for (const url of buildDirectCategoryUrls(legalName)) {
     if (visited.has(url)) continue;
     visited.add(url);
