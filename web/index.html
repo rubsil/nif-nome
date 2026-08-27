@@ -18,6 +18,7 @@
     input { flex: 1; min-width: 0; border: 1px solid #cbd2df; border-radius: 11px; padding: 14px 16px; font: inherit; font-size: 1.05rem; }
     button { border: 0; border-radius: 11px; padding: 0 22px; font: inherit; font-weight: 650; cursor: pointer; background: #172033; color: white; }
     button:hover { opacity: .9; }
+    button:disabled { opacity: .55; cursor: wait; }
     .hint { color: #7a8497; font-size: .9rem; margin: 10px 2px 0; }
     #result { margin-top: 18px; }
     .company-profile { border-top: 1px solid #e5e8ee; padding-top: 22px; }
@@ -30,10 +31,21 @@
     .company-meta div { background: #f7f8fb; border-radius: 12px; padding: 12px 14px; }
     .company-meta span { display: block; color: #7b8495; font-size: .78rem; margin-bottom: 3px; }
     .company-meta strong { font-size: .95rem; }
-    .map-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .map-actions { margin-top: 8px; }
+    .map-buttons { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     .map-link { display: inline-block; color: #172033; font-size: .86rem; font-weight: 650; text-decoration: none; }
     .map-link:hover { text-decoration: underline; }
     .map-link.secondary { color: #58657a; font-weight: 600; }
+    .map-link-button { background: none; color: #58657a; padding: 0; font-size: .86rem; font-weight: 650; }
+    .map-link-button:hover { opacity: 1; text-decoration: underline; }
+    .nearby-results { margin-top: 10px; }
+    .nearby-title { color: #687386; font-size: .82rem; margin-bottom: 6px; }
+    .nearby-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+    .nearby-place { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 9px 11px; border: 1px solid #e3e7ee; border-radius: 10px; background: #fff; }
+    .nearby-place strong { display: block; font-size: .9rem; }
+    .nearby-place span, .nearby-place small { display: block; color: #7a8497; font-size: .76rem; margin-top: 2px; }
+    .nearby-place a { color: #172033; font-size: .78rem; font-weight: 700; text-decoration: none; }
+    .nearby-attribution { color: #8992a3; font-size: .72rem; line-height: 1.4; margin-top: 8px; }
     .public-name-card { border: 1px solid #e1e5ec; border-radius: 14px; padding: 16px; margin: 10px 0; }
     .public-name { font-size: 1.45rem; font-weight: 750; }
     .name-type { color: #7b8495; font-size: .82rem; margin-top: 2px; }
@@ -61,7 +73,7 @@
     .suggestion button { min-height: 44px; }
     #suggestStatus { color: #28653a; font-size: .9rem; min-height: 20px; }
     footer { text-align: center; color: #8992a3; font-size: .82rem; margin-top: 22px; }
-    @media (max-width: 560px) { form { flex-direction: column; } button { min-height: 48px; } .company-meta { grid-template-columns: 1fr; } .source-list li { display: grid; gap: 2px; } .source-list span { white-space: normal; } .map-actions { display: grid; } }
+    @media (max-width: 560px) { form { flex-direction: column; } button { min-height: 48px; } .company-meta { grid-template-columns: 1fr; } .source-list li { display: grid; gap: 2px; } .source-list span { white-space: normal; } .map-buttons { display: grid; align-items: start; } }
   </style>
 </head>
 <body>
