@@ -30,7 +30,6 @@ function cleanPublicName(value: unknown): string | null {
   const v = value.replace(/\s+/g, " ").trim();
   if (v.length < 3 || v.length > 120) return null;
   const n = normaliseText(v);
-  // These are navigation/content fragments, not commercial names.
   if (/^s e public/.test(n) || /licenciada|lider no mercado|informacao para negocios|relatorio gratis|relatorio gratuito/.test(n)) return null;
   if (/^(english|spanish|home|search|login|register|privacy|cookies|nif|nipc|morada|atividade|designacao comercial|denominacao|razao social)$/.test(n)) return null;
   if (v.split(/\s+/).length > 15) return null;
@@ -57,9 +56,20 @@ function mergeResult(base: Result | null, incoming: Partial<Result> | null): Res
   if (!base) return incoming as Result;
   return { ...base, ...incoming, legalName: cleanLegalName(incoming.legalName || base.legalName), publicNames: mergeEvidence(base.publicNames || [], incoming.publicNames || []), publicName: null };
 }
+
+// The evidence tables were introduced after the original Worker schema. Cloudflare's
+// dashboard deploy command runs `wrangler deploy`, but does not automatically apply
+// D1 migrations. Create the small evidence schema lazily so a new deployment remains
+// usable even before the migration is applied manually.
+async function ensureEvidenceSchema(env: Env) {
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS public_names (id INTEGER PRIMARY KEY AUTOINCREMENT, nif TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'nome comercial', confidence REAL NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(nif, name))`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS name_evidence (id INTEGER PRIMARY KEY AUTOINCREMENT, public_name_id INTEGER NOT NULL, source_name TEXT NOT NULL, source_type TEXT, source_url TEXT, confidence REAL NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), FOREIGN KEY(public_name_id) REFERENCES public_names(id) ON DELETE CASCADE, UNIQUE(public_name_id, source_name, source_url))`).run();
+}
+
 async function saveCompany(env: Env, r: Result, evidence: Evidence[]) {
   const best = evidence[0]?.name || null;
   await env.DB.prepare(`INSERT INTO companies (nif, legal_name, public_name, location, confidence) VALUES (?, ?, ?, ?, ?) ON CONFLICT(nif) DO UPDATE SET legal_name=CASE WHEN excluded.legal_name!='' THEN excluded.legal_name ELSE companies.legal_name END, public_name=excluded.public_name, location=COALESCE(excluded.location,companies.location), confidence=excluded.confidence`).bind(r.nif, r.legalName || "", best, r.address || r.location || null, evidence.length ? evidence[0].confidence : 0.65).run();
+  await ensureEvidenceSchema(env);
   for (const e of evidence) {
     const row = await env.DB.prepare(`INSERT INTO public_names (nif,name,type,confidence) VALUES (?,?,?,?) ON CONFLICT(nif,name) DO UPDATE SET confidence=MAX(public_names.confidence,excluded.confidence), type=excluded.type RETURNING id`).bind(r.nif, e.name, e.type || "nome comercial", e.confidence).first<{id:number}>();
     if (!row) continue;
@@ -67,10 +77,13 @@ async function saveCompany(env: Env, r: Result, evidence: Evidence[]) {
   }
 }
 async function cachedEvidence(env: Env, nif: string): Promise<Evidence[]> {
-  const rows = await env.DB.prepare(`SELECT pn.name,pn.type,pn.confidence,ne.source_name,ne.source_type,ne.source_url FROM public_names pn LEFT JOIN name_evidence ne ON ne.public_name_id=pn.id WHERE pn.nif=? ORDER BY pn.confidence DESC`).bind(nif).all<any>();
-  const map = new Map<string,Evidence>();
-  for (const r of rows.results || []) { const key=normaliseText(r.name); let e=map.get(key); if(!e){e={name:r.name,type:r.type,confidence:Number(r.confidence)||0,sources:[]};map.set(key,e);} if(r.source_name && !e.sources.some(s=>s.name===r.source_name&&s.url===r.source_url)) e.sources.push({name:r.source_name,source_type:r.source_type,url:r.source_url}); }
-  return [...map.values()].sort((a,b)=>b.confidence-a.confidence);
+  try {
+    await ensureEvidenceSchema(env);
+    const rows = await env.DB.prepare(`SELECT pn.name,pn.type,pn.confidence,ne.source_name,ne.source_type,ne.source_url FROM public_names pn LEFT JOIN name_evidence ne ON ne.public_name_id=pn.id WHERE pn.nif=? ORDER BY pn.confidence DESC`).bind(nif).all<any>();
+    const map = new Map<string,Evidence>();
+    for (const r of rows.results || []) { const key=normaliseText(r.name); let e=map.get(key); if(!e){e={name:r.name,type:r.type,confidence:Number(r.confidence)||0,sources:[]};map.set(key,e);} if(r.source_name && !e.sources.some(s=>s.name===r.source_name&&s.url===r.source_url)) e.sources.push({name:r.source_name,source_type:r.source_type,url:r.source_url}); }
+    return [...map.values()].sort((a,b)=>b.confidence-a.confidence);
+  } catch { return []; }
 }
 async function discoverNifPt(nif:string,env:Env):Promise<Partial<Result>|null>{ if(!env.NIFPT_API_KEY) throw new Error("API key não configurada no Worker"); const f=await findByNifPt(nif,env.NIFPT_API_KEY); if(!f)return null; const r=f.record; const address=r.address||r.place?.address||null; return {nif,legalName:cleanLegalName(r.title),publicName:null,publicNames:(()=>{const n=cleanPublicName(r.alias);return n?[sourceEvidence(n,"nif.pt",undefined,0.85)]:[]})(),location:address||r.place?.city||r.city||r.geo?.county||null,address,website:r.contacts?.website||null,activity:r.activity||null,cae:r.cae||null,source:"nif.pt"}; }
 async function discoverVies(nif:string):Promise<Partial<Result>|null>{const f=await findByVies(nif);if(!f)return null;return {nif,legalName:cleanLegalName(f.legalName),publicNames:[],location:f.address||null,address:f.address||null,website:null,activity:null,cae:null,source:"vies",requestDate:f.requestDate||null};}
