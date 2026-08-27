@@ -17,6 +17,7 @@ function streetAndNumber(value: string): string {
     .replace(/\bC[oó]digo Postal\s*:\s*\d{4}-\d{3}\b/gi, "")
     .replace(/\b\d{4}-\d{3}\b/g, "")
     .replace(/\b(?:HRT|MAD|MADALENA|HORTA)\b/gi, "")
+    .replace(/\b(?:R\/C|RC|R\.\/C\.)\b/gi, "")
     .replace(/\s*,\s*$/, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -29,8 +30,11 @@ function locality(value: string): string {
 }
 async function geocode(query: string): Promise<any | null> {
   const url = new URL("https://nominatim.openstreetmap.org/search");
-  url.searchParams.set("q", `${query}, Portugal`); url.searchParams.set("format", "jsonv2"); url.searchParams.set("limit", "1"); url.searchParams.set("countrycodes", "pt");
-  const response = await fetch(url.toString(), { headers: { "user-agent": "nif-nome/1.3 (public business lookup; contact via project)", accept: "application/json" } });
+  url.searchParams.set("q", query);
+  url.searchParams.set("format", "jsonv2");
+  url.searchParams.set("limit", "1");
+  url.searchParams.set("countrycodes", "pt");
+  const response = await fetch(url.toString(), { headers: { "user-agent": "nif-nome/1.4 (public business lookup; contact via project)", accept: "application/json" } });
   if (!response.ok) return null;
   const rows = await response.json<any[]>();
   return rows[0] || null;
@@ -41,17 +45,18 @@ export async function findNearby(address: string): Promise<{ places: NearbyPlace
   const pc = postcode(raw);
   const base = streetAndNumber(raw);
   const loc = locality(raw);
-  const upper = normalise(raw).toUpperCase();
+  const upper = raw.toUpperCase();
   const islandHint = /HORTA|CASTELO BRANCO HRT|FAIAL|9900-/.test(upper) ? "Horta, Faial" : "";
+  // Try the most precise address forms first. In particular, don't let a
+  // postcode-only result win before we've tried the actual street/number.
   const candidates = [
+    base && loc ? `${base}, ${loc}, Portugal` : "",
+    base && islandHint ? `${base}, ${islandHint}, Portugal` : "",
+    pc && loc ? `${pc}, ${loc}, Portugal` : "",
     raw,
     base,
-    pc,
-    pc && loc ? `${pc} ${loc}` : "",
-    base && loc ? `${base}, ${loc}` : "",
-    base && islandHint ? `${base}, ${islandHint}` : "",
-    pc && islandHint ? `${pc}, ${islandHint}` : ""
-  ].map(v => withoutPortugal(v)).filter((v, i, arr) => v.length >= 4 && arr.indexOf(v) === i);
+    pc && islandHint ? `${pc}, ${islandHint}, Portugal` : ""
+  ].map(v => v.trim()).filter((v, i, arr) => v.length >= 4 && arr.indexOf(v) === i);
 
   let geo: any | null = null;
   for (const candidate of candidates) {
@@ -61,15 +66,13 @@ export async function findNearby(address: string): Promise<{ places: NearbyPlace
   if (!geo) return { places: [], geocoded: null, source: "OpenStreetMap" };
 
   const lat = Number(geo.lat), lon = Number(geo.lon);
-  // Keep the radius deliberately small. The feature is intended to help identify
-  // an establishment at/next to the registered address, not to list a town.
   const radius = 150;
   const query = `[out:json][timeout:20];(nwr(around:${radius},${lat},${lon})["name"]["amenity"];nwr(around:${radius},${lat},${lon})["name"]["shop"];nwr(around:${radius},${lat},${lon})["name"]["tourism"];nwr(around:${radius},${lat},${lon})["name"]["craft"];nwr(around:${radius},${lat},${lon})["name"]["office"];nwr(around:${radius},${lat},${lon})["name"]["leisure"];nwr(around:${radius},${lat},${lon})["name"]["healthcare"];);out center tags;`;
   const endpoints = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
   let payload: any = null;
   for (const endpoint of endpoints) {
     try {
-      const overpass = await fetch(endpoint, { method: "POST", headers: { "content-type": "text/plain; charset=utf-8", "user-agent": "nif-nome/1.3 (public business lookup)" }, body: query });
+      const overpass = await fetch(endpoint, { method: "POST", headers: { "content-type": "text/plain; charset=utf-8", "user-agent": "nif-nome/1.4 (public business lookup)" }, body: query });
       if (overpass.ok) { payload = await overpass.json<any>(); break; }
     } catch {}
   }
