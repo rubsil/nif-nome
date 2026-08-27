@@ -35,10 +35,6 @@ function extractLabeled(text: string, label: string): string | null {
 }
 
 function extractFromPage(text: string, nif: string, legalName: string | null, sourceUrl: string): EmpresiteResult | null {
-  // Important: Empresite category/list pages often contain the legal name and
-  // the explicit "Designação comercial" field, but do NOT contain the NIF.
-  // Therefore a page is relevant when it contains either the NIF OR the
-  // exact legal name supplied by the authoritative provider.
   const hasNif = text.includes(nif);
   const hasLegalName = !!legalName && keyOf(text).includes(keyOf(legalName));
   if (!hasNif && !hasLegalName) return null;
@@ -78,8 +74,8 @@ function extractCommercialNamesNearAnchor(text: string, anchor: string, legalNam
   while (true) {
     const index = lower.indexOf(needle, from);
     if (index < 0) break;
-    const start = Math.max(0, index - 700);
-    const end = Math.min(text.length, index + Math.max(3000, anchor.length + 2200));
+    const start = Math.max(0, index - 1000);
+    const end = Math.min(text.length, index + Math.max(5000, anchor.length + 3500));
     const window = text.slice(start, end);
 
     const patterns = [
@@ -108,8 +104,23 @@ function extractFromSearchText(html: string, nif: string, legalName: string | nu
   return null;
 }
 
+function buildSearchTerms(nif: string, legalName: string | null): string[] {
+  const terms = new Set<string>();
+  terms.add(`"${nif}" "Designação comercial" site:empresite.jornaldenegocios.pt`);
+  terms.add(`"${nif}" "nome comercial" site:empresite.jornaldenegocios.pt`);
+  if (legalName) {
+    const normal = legalName.replace(/\s+/g, " ").trim();
+    const withoutSuffix = normal.replace(/,?\s+(unipessoal|sociedade|lda|sa|s\.a\.).*$/i, "").trim();
+    terms.add(`"${normal}" "Designação comercial" site:empresite.jornaldenegocios.pt`);
+    terms.add(`"${normal}" site:empresite.jornaldenegocios.pt`);
+    terms.add(`${withoutSuffix} Empresite`);
+    terms.add(`${withoutSuffix} "Designação comercial" Empresite`);
+  }
+  return [...terms];
+}
+
 async function fetchPage(url: string): Promise<string | null> {
-  const response = await fetch(url, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/1.6; public business lookup)", accept: "text/html,application/xhtml+xml" } });
+  const response = await fetch(url, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/1.7; public business lookup)", accept: "text/html,application/xhtml+xml" } });
   if (!response.ok) return null;
   const bytes = await response.arrayBuffer();
   const contentType = response.headers.get("content-type") || "";
@@ -119,27 +130,18 @@ async function fetchPage(url: string): Promise<string | null> {
 }
 
 export async function findByNif(nif: string, legalName: string | null): Promise<EmpresiteResult | null> {
-  const terms = [
-    `"${nif}" "Designação comercial" site:empresite.jornaldenegocios.pt`,
-    `"${nif}" "nome comercial" site:empresite.jornaldenegocios.pt`,
-    legalName ? `"${legalName}" "Designação comercial" site:empresite.jornaldenegocios.pt` : `"${nif}" site:empresite.jornaldenegocios.pt`,
-    legalName ? `"${legalName}" site:empresite.jornaldenegocios.pt` : `"${nif}" site:empresite.jornaldenegocios.pt`
-  ];
+  const terms = buildSearchTerms(nif, legalName);
   const visited = new Set<string>();
   for (const term of terms) {
     const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(term)}`;
     try {
-      const searchResponse = await fetch(searchUrl, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/1.6; public business lookup)", accept: "text/html" } });
+      const searchResponse = await fetch(searchUrl, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/1.7; public business lookup)", accept: "text/html" } });
       if (!searchResponse.ok) continue;
       const html = await searchResponse.text();
-
-      // First inspect the search result snippets themselves. This is useful
-      // for Empresite category pages where the NIF is not indexed but the
-      // legal name and explicit commercial designation are shown together.
       const searchFound = extractFromSearchText(html, nif, legalName, searchUrl);
       if (searchFound?.publicNames.length) return searchFound;
 
-      const urls = extractSearchUrls(html).slice(0, 20);
+      const urls = extractSearchUrls(html).slice(0, 30);
       for (const url of urls) {
         if (visited.has(url)) continue;
         visited.add(url);
