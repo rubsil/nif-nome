@@ -5,7 +5,6 @@ import { findByNif as findByEInforma } from "./providers/einforma";
 import { findByNif as findByRigorBiz } from "./providers/rigorbiz";
 import { findByNif as findByEmpresite } from "./providers/empresite";
 import { findNearby } from "./providers/nearby";
-
 export interface Env { DB: D1Database; ENVIRONMENT: string; ASSETS: Fetcher; NIFPT_API_KEY?: string; }
 function corsHeaders() { return { "access-control-allow-origin": "*", "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type" }; }
 function json(data: unknown, init: ResponseInit = {}) { return new Response(JSON.stringify(data), { ...init, headers: { "content-type": "application/json; charset=utf-8", ...(init.headers || {}), ...corsHeaders() } }); }
@@ -23,17 +22,17 @@ async function discoverWithPublicacoes(nif: string) { const found = await findBy
 async function discoverWithRigorBiz(nif: string) { const found = await findByRigorBiz(nif); if (!found) return null; return { nif, legalName: cleanLegalName(found.legalName), publicName: null, publicNames: [], location: found.address || null, address: found.address, website: null, activity: null, cae: null, source: "rigorbiz", sourceUrl: found.sourceUrl }; }
 function mergePublicNames(existing: any[], incoming: any[]): any[] { const map = new Map<string, any>(); for (const item of [...existing, ...incoming]) { const name = cleanPublicName(item?.name); if (!name) continue; const key = normaliseText(name); const old = map.get(key); if (!old) map.set(key, { ...item, name }); else { const sources = [...(old.sources || []), ...(item.sources || [])]; const uniqueSources = sources.filter((source: any, index: number, arr: any[]) => index === arr.findIndex(other => other?.url === source?.url && other?.name === source?.name)); map.set(key, { ...old, ...item, name, confidence: Math.min(0.99, Math.max(Number(old.confidence) || 0, Number(item.confidence) || 0) + (uniqueSources.length > 1 ? 0.04 : 0)), sources: uniqueSources }); } } return [...map.values()]; }
 function mergeResult(base: any, discovered: any): any { if (!discovered) return base; const merged = { ...(base || {}), ...discovered }; if (base?.publicNames?.length || discovered?.publicNames?.length) merged.publicNames = mergePublicNames(base?.publicNames || [], discovered?.publicNames || []); return merged; }
-
 export default { async fetch(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders() });
   if (url.pathname === "/health") return json({ ok: true, environment: env.ENVIRONMENT || "production" });
   if (url.pathname === "/api/nearby" && request.method === "GET") { const address = (url.searchParams.get("address") || "").trim(); if (address.length < 5) return json({ error: "Morada inválida." }, { status: 400 }); try { return json(await findNearby(address)); } catch (error) { return json({ error: String(error).replace(/[\r\n]/g, " ").slice(0, 200), source: "OpenStreetMap" }, { status: 502 }); } }
-
   if (url.pathname === "/api/discover" && request.method === "GET") {
     const nif = (url.searchParams.get("nif") || "").replace(/\D/g, ""); if (nif.length !== 9) return json({ error: "NIF inválido." }, { status: 400 });
     const forceRefresh = url.searchParams.get("refresh") === "1";
     const existing = await env.DB.prepare("SELECT * FROM companies WHERE nif = ? LIMIT 1").bind(nif).first<Record<string, unknown>>();
+    const legacyBadNames = new Set(["english", "spanish"]);
+    if (existing?.public_name && legacyBadNames.has(normaliseText(String(existing.public_name)))) { await env.DB.prepare("UPDATE companies SET public_name = NULL WHERE nif = ?").bind(nif).run(); existing.public_name = null; }
     const cachedPublicName = cleanPublicName(existing?.public_name);
     if (existing?.public_name && !cachedPublicName) { await env.DB.prepare("UPDATE companies SET public_name = NULL WHERE nif = ?").bind(nif).run(); existing.public_name = null; }
     if (existing && !forceRefresh && cachedPublicName) return json({ found: true, cached: true, company: companyPayload(existing) });
@@ -48,8 +47,6 @@ export default { async fetch(request: Request, env: Env): Promise<Response> {
     await run("eInforma", () => discoverWithEInforma(nif));
     await run("publicacoes.mj.pt", () => discoverWithPublicacoes(nif));
     await run("rigorbiz", () => discoverWithRigorBiz(nif));
-    // No generic web-name guessing: search engines may be used to find source pages,
-    // but arbitrary words from snippets are never treated as a company name.
     return await finish();
   }
   if (url.pathname.startsWith("/api/company/") && request.method === "GET") { const nif = url.pathname.slice("/api/company/".length).replace(/\D/g, ""); if (nif.length !== 9) return json({ error: "NIF inválido." }, { status: 400 }); const row = await env.DB.prepare("SELECT * FROM companies WHERE nif = ? LIMIT 1").bind(nif).first<Record<string, unknown>>(); if (!row) return json({ error: "Empresa não encontrada." }, { status: 404 }); return json(companyPayload(row)); }
