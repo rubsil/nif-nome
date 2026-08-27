@@ -34,7 +34,7 @@ async function geocode(query: string): Promise<any | null> {
   url.searchParams.set("format", "jsonv2");
   url.searchParams.set("limit", "1");
   url.searchParams.set("countrycodes", "pt");
-  const response = await fetch(url.toString(), { headers: { "user-agent": "nif-nome/1.6 (public business lookup; contact via project)", accept: "application/json" } });
+  const response = await fetch(url.toString(), { headers: { "user-agent": "nif-nome/1.7 (public business lookup; contact via project)", accept: "application/json" } });
   if (!response.ok) return null;
   const rows = await response.json<any[]>();
   return rows[0] || null;
@@ -47,11 +47,17 @@ export async function findNearby(address: string): Promise<{ places: NearbyPlace
   const loc = locality(raw);
   const upper = raw.toUpperCase();
   const islandHint = /HORTA|CASTELO BRANCO HRT|FAIAL|9900-/.test(upper) ? "Horta, Faial" : "";
+
+  // Prefer the complete street + house number + postcode. This is much more
+  // precise than geocoding only the street/locality and avoids landing on the
+  // wrong end of a long street.
   const candidates = [
+    base && pc && loc ? `${base}, ${pc}, ${loc}, Portugal` : "",
+    base && pc && islandHint ? `${base}, ${pc}, ${islandHint}, Portugal` : "",
+    raw,
     base && loc ? `${base}, ${loc}, Portugal` : "",
     base && islandHint ? `${base}, ${islandHint}, Portugal` : "",
     pc && loc ? `${pc}, ${loc}, Portugal` : "",
-    raw,
     base,
     pc && islandHint ? `${pc}, ${islandHint}, Portugal` : ""
   ].map(v => v.trim()).filter((v, i, arr) => v.length >= 4 && arr.indexOf(v) === i);
@@ -64,14 +70,14 @@ export async function findNearby(address: string): Promise<{ places: NearbyPlace
   if (!geo) return { places: [], geocoded: null, source: "OpenStreetMap" };
 
   const lat = Number(geo.lat), lon = Number(geo.lon);
-  // 300 m gives a useful local context without turning this into a city-wide search.
+  // 300 m gives useful local context without turning this into a city-wide search.
   const radius = 300;
   const query = `[out:json][timeout:20];(nwr(around:${radius},${lat},${lon})["name"]["amenity"];nwr(around:${radius},${lat},${lon})["name"]["shop"];nwr(around:${radius},${lat},${lon})["name"]["tourism"];nwr(around:${radius},${lat},${lon})["name"]["craft"];nwr(around:${radius},${lat},${lon})["name"]["office"];nwr(around:${radius},${lat},${lon})["name"]["leisure"];nwr(around:${radius},${lat},${lon})["name"]["healthcare"];);out center tags;`;
   const endpoints = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
   let payload: any = null;
   for (const endpoint of endpoints) {
     try {
-      const overpass = await fetch(endpoint, { method: "POST", headers: { "content-type": "text/plain; charset=utf-8", "user-agent": "nif-nome/1.6 (public business lookup)" }, body: query });
+      const overpass = await fetch(endpoint, { method: "POST", headers: { "content-type": "text/plain; charset=utf-8", "user-agent": "nif-nome/1.7 (public business lookup)" }, body: query });
       if (overpass.ok) { payload = await overpass.json<any>(); break; }
     } catch {}
   }
