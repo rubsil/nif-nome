@@ -40,11 +40,18 @@ function field(text: string, labels: string[], nextLabels: string[]): string | n
 
 function cleanLegalName(value: string | null): string | null {
   if (!value) return null;
-  // eInforma may show the current name together with an old denomination.
-  // Keep the first legal denomination only and never let navigation text leak in.
-  const v = value.replace(/\s+/g, " ").trim();
+  let v = value.replace(/\s+/g, " ").trim();
   const stop = v.search(/\b(?:Designa(?:ções|coes) anteriores|Morada|Atividade|Código Postal)\b/i);
-  return normalise(stop > 0 ? v.slice(0, stop) : v);
+  if (stop > 0) v = v.slice(0, stop).trim();
+
+  // eInforma can repeat the denomination twice in the page text. If the whole
+  // value consists of the same phrase twice, keep only one copy.
+  const half = Math.floor(v.length / 2);
+  if (v.length % 2 === 1) return normalise(v);
+  const left = v.slice(0, half).trim();
+  const right = v.slice(half).trim();
+  if (left && left.toLocaleLowerCase() === right.toLocaleLowerCase()) v = left;
+  return normalise(v);
 }
 
 function looksLikeCommercialName(value: string, legalName: string | null): boolean {
@@ -52,7 +59,8 @@ function looksLikeCommercialName(value: string, legalName: string | null): boole
   if (v.length < 3 || v.length > 100) return false;
   if (legalName && v.toLocaleLowerCase() === legalName.toLocaleLowerCase()) return false;
   if (/^(?:s|e)\s+publica/i.test(v)) return false;
-  if (/licenciada|líder|lider|mercado|informação para negócios|informacao para negocios|informa d&b/i.test(v)) return false;
+  if (/^(?:english|portugu[eê]s|portugal|home|menu|contactos?|contact|about|in[íi]cio|pesquisa|resultado|empresa|restaurante|pizzaria)$/i.test(v)) return false;
+  if (/licenciada|líder|lider|mercado|informação para negócios|informacao para negocios|informa d&b|relatório grátis|relatorio gratis/i.test(v)) return false;
   if (/^(?:anterior|actual|atual|empresa|sociedade|atividade|morada|endereço|telefone|email|website)$/i.test(v)) return false;
   if (v.split(/\s+/).length > 12) return false;
   return true;
@@ -93,8 +101,6 @@ async function fetchPage(url: string): Promise<string | null> {
   const bytes = await response.arrayBuffer();
   const type = response.headers.get("content-type") || "";
   const charset = /charset=([^;]+)/i.exec(type)?.[1]?.trim().toLowerCase();
-  // eInforma has historically served ISO-8859-1/Windows-1252 pages. Decode explicitly
-  // so Portuguese accents are not turned into Ã§/Ã¡ mojibake.
   const decoder = new TextDecoder(charset === "utf-8" ? "utf-8" : "windows-1252");
   return clean(decoder.decode(bytes));
 }
