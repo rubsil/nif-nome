@@ -34,7 +34,7 @@ async function geocode(query: string): Promise<any | null> {
   url.searchParams.set("format", "jsonv2");
   url.searchParams.set("limit", "1");
   url.searchParams.set("countrycodes", "pt");
-  const response = await fetch(url.toString(), { headers: { "user-agent": "nif-nome/1.4 (public business lookup; contact via project)", accept: "application/json" } });
+  const response = await fetch(url.toString(), { headers: { "user-agent": "nif-nome/1.6 (public business lookup; contact via project)", accept: "application/json" } });
   if (!response.ok) return null;
   const rows = await response.json<any[]>();
   return rows[0] || null;
@@ -47,8 +47,6 @@ export async function findNearby(address: string): Promise<{ places: NearbyPlace
   const loc = locality(raw);
   const upper = raw.toUpperCase();
   const islandHint = /HORTA|CASTELO BRANCO HRT|FAIAL|9900-/.test(upper) ? "Horta, Faial" : "";
-  // Try the most precise address forms first. In particular, don't let a
-  // postcode-only result win before we've tried the actual street/number.
   const candidates = [
     base && loc ? `${base}, ${loc}, Portugal` : "",
     base && islandHint ? `${base}, ${islandHint}, Portugal` : "",
@@ -66,13 +64,14 @@ export async function findNearby(address: string): Promise<{ places: NearbyPlace
   if (!geo) return { places: [], geocoded: null, source: "OpenStreetMap" };
 
   const lat = Number(geo.lat), lon = Number(geo.lon);
-  const radius = 150;
+  // 300 m gives a useful local context without turning this into a city-wide search.
+  const radius = 300;
   const query = `[out:json][timeout:20];(nwr(around:${radius},${lat},${lon})["name"]["amenity"];nwr(around:${radius},${lat},${lon})["name"]["shop"];nwr(around:${radius},${lat},${lon})["name"]["tourism"];nwr(around:${radius},${lat},${lon})["name"]["craft"];nwr(around:${radius},${lat},${lon})["name"]["office"];nwr(around:${radius},${lat},${lon})["name"]["leisure"];nwr(around:${radius},${lat},${lon})["name"]["healthcare"];);out center tags;`;
   const endpoints = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
   let payload: any = null;
   for (const endpoint of endpoints) {
     try {
-      const overpass = await fetch(endpoint, { method: "POST", headers: { "content-type": "text/plain; charset=utf-8", "user-agent": "nif-nome/1.4 (public business lookup)" }, body: query });
+      const overpass = await fetch(endpoint, { method: "POST", headers: { "content-type": "text/plain; charset=utf-8", "user-agent": "nif-nome/1.6 (public business lookup)" }, body: query });
       if (overpass.ok) { payload = await overpass.json<any>(); break; }
     } catch {}
   }
@@ -89,5 +88,5 @@ export async function findNearby(address: string): Promise<{ places: NearbyPlace
   places.sort((a, b) => a.distance_m - b.distance_m);
   const unique = new Map<string, NearbyPlace>();
   for (const place of places) { const key = `${place.name.toLocaleLowerCase()}|${place.address || ""}`; if (!unique.has(key)) unique.set(key, place); }
-  return { places: [...unique.values()].slice(0, 15), geocoded: { display_name: geo.display_name, lat, lon }, source: "OpenStreetMap" };
+  return { places: [...unique.values()].slice(0, 20), geocoded: { display_name: geo.display_name, lat, lon }, source: "OpenStreetMap" };
 }
