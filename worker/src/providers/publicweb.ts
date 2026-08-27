@@ -21,9 +21,12 @@ function normalise(value: string): string {
 function validCandidate(value: string, legalName: string): boolean {
   const v = normalise(value);
   if (v.length < 4 || v.length > 100) return false;
-  if (v.toLocaleLowerCase() === legalName.toLocaleLowerCase()) return false;
-  if (/^(?:nif|empresa|contribuinte|denomina(?:ção|cao)|morada|atividade|código postal|cnae|cae)$/i.test(v)) return false;
-  if (/licenciada|líder|lider|mercado|informação para negócios|informa d&b|relatório grátis/i.test(v)) return false;
+  const n = v.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase();
+  if (n === legalName.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase()) return false;
+  // Never promote generic language/navigation/search-result words to a company name.
+  if (/^(english|portugues|portugal|home|menu|contactos?|contact|about|inicio|pesquisa|resultado|empresa|restaurante|pizzaria|publicacoes|publicacoes legais|relatorio gratis|relatorio)$/.test(n)) return false;
+  if (/licenciada|lider|mercado|informacao para negocios|informa d&b|relatorio gratis/.test(n)) return false;
+  if (/^(nif|contribuinte|denominacao|morada|atividade|codigo postal|cnae|cae)$/.test(n)) return false;
   return true;
 }
 
@@ -45,8 +48,6 @@ export async function findPublicNames(nif: string, legalName: string | null): Pr
     const text = strip(html);
     if (!text.includes(nif)) continue;
 
-    // Public records often put the establishment name in parentheses immediately
-    // beside the NIF (e.g. "Empresa X (Restaurante Y) ... NIF").
     const windowRe = new RegExp(`.{0,900}${nif}.{0,900}`, "gi");
     for (const match of text.matchAll(windowRe)) {
       const chunk = match[0];
