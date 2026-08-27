@@ -11,7 +11,23 @@ function json(data: unknown, init: ResponseInit = {}) { return new Response(JSON
 function normaliseText(value: string): string { return value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toLocaleLowerCase(); }
 function isUsablePublicName(value: unknown): value is string { if (typeof value !== "string") return false; const v = value.replace(/\s+/g, " ").trim(); if (v.length < 3 || v.length > 100) return false; const n = normaliseText(v); if (/^s\s+e\s+public/.test(n)) return false; if (/licenciada|líder|lider|mercado|informação para negócios|informacao para negocios|informa d&b|relatório grátis|relatorio gratis/.test(n)) return false; if (/^(nif|contribuinte|denominação|denominacao|morada|atividade|codigo postal|cnae|cae|privacy|cookies|login|register|search|next|previous)$/i.test(n)) return false; if (v.split(/\s+/).length > 12) return false; return true; }
 function cleanPublicName(value: unknown): string | null { return typeof value === "string" && isUsablePublicName(value) ? value.replace(/\s+/g, " ").trim() : null; }
-function cleanLegalName(value: unknown): string | null { if (typeof value !== "string") return null; let v = value.replace(/\s+/g, " ").trim(); if (!v) return null; const half = v.length / 2; if (Number.isInteger(half)) { const left = v.slice(0, half).trim(), right = v.slice(half).trim(); if (left && normaliseText(left) === normaliseText(right)) v = left; } return v; }
+function cleanLegalName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  let v = value.replace(/\s+/g, " ").trim();
+  if (!v) return null;
+  // Some directories repeat the same legal name twice in their page text.
+  // Remove an exact repeated suffix, even when spacing/case/accents differ.
+  for (let i = 1; i < v.length; i++) {
+    if (v.length % 2 !== 0) break;
+    const half = v.length / 2;
+    const left = v.slice(0, half).trim();
+    const right = v.slice(half).trim();
+    if (left && normaliseText(left) === normaliseText(right)) { v = left; break; }
+  }
+  const repeated = v.match(/^(.{3,120}?)\s+\1$/i);
+  if (repeated?.[1]) v = repeated[1].trim();
+  return v;
+}
 function companyPayload(row: Record<string, unknown>) { const confidence = Number(row.confidence) || 0; const publicName = cleanPublicName(row.public_name); return { nif: row.nif, legalName: cleanLegalName(row.legal_name), location: row.location, address: row.address || row.location || null, website: row.website || null, publicNames: publicName ? [{ name: publicName, type: "nome comercial", confidence, sources: [] }] : [] }; }
 async function saveCompany(env: Env, nif: string, legalName: string, publicName: string | null, location: string | null, confidence: number) { await env.DB.prepare(`INSERT INTO companies (nif, legal_name, public_name, location, confidence) VALUES (?, ?, ?, ?, ?) ON CONFLICT(nif) DO UPDATE SET legal_name = CASE WHEN excluded.legal_name != '' THEN excluded.legal_name ELSE companies.legal_name END, public_name = CASE WHEN excluded.public_name IS NOT NULL THEN excluded.public_name ELSE companies.public_name END, location = COALESCE(excluded.location, companies.location), confidence = MAX(companies.confidence, excluded.confidence)`).bind(nif, legalName, publicName, location, confidence).run(); }
 async function discoverWithNifPt(nif: string, env: Env) { if (!env.NIFPT_API_KEY) throw new Error("API key não configurada no Worker"); const found = await findByNifPt(nif, env.NIFPT_API_KEY); if (!found) return null; const r = found.record; const address = r.address || r.place?.address || null; const location = address || r.place?.city || r.city || r.geo?.county || null; const publicName = cleanPublicName(r.alias || ""); return { nif, legalName: cleanLegalName(r.title), publicName, location, address, website: r.contacts?.website || null, activity: r.activity || null, cae: r.cae || null, source: "nif.pt" }; }
@@ -38,7 +54,7 @@ export default { async fetch(request: Request, env: Env): Promise<Response> {
     if (existing && !forceRefresh && cachedPublicName) return json({ found: true, cached: true, company: companyPayload(existing) });
     const sourcesChecked: string[] = [], providerErrors: Record<string,string> = {}, providerResults: Record<string,string> = {};
     let base: any = existing ? { nif, legalName: cleanLegalName(existing.legal_name), publicName: null, publicNames: [], location: existing.location || null, address: existing.address || existing.location || null, website: existing.website || null, activity: null, cae: null, source: "cache" } : null;
-    const run = async (name: string, fn: () => Promise<any>) => { sourcesChecked.push(name); try { const result = await fn(); providerResults[name] = result ? "found" : "not_found"; if (result) base = mergeResult(base, result); return result; } catch (error) { providerResults[name] = "error"; providerErrors[name] = String(error).replace(/[\r\n]/g, " ").slice(0, 200); return null; } };
+    const run = async (name: string, fn: () => Promise<any>) => { sourcesChecked.push(name); try { const r = await fn(); providerResults[name] = r ? "found" : "not_found"; if (r) base = mergeResult(base, r); return r; } catch (error) { providerResults[name] = "error"; providerErrors[name] = String(error).replace(/[\r\n]/g, " ").slice(0, 200); return null; } };
     const finish = async () => { if (!base) return json({ found: false, sources_checked: sourcesChecked, provider_results: providerResults, ...(Object.keys(providerErrors).length ? { provider_errors: providerErrors } : {}) }); const legalName = cleanLegalName(base.legalName); const rawNames = base.publicNames || []; const names = rawNames.filter((item: any) => { const name = cleanPublicName(item?.name); return !!name && (!legalName || normaliseText(name) !== normaliseText(legalName)); }).map((item: any) => ({ ...item, name: cleanPublicName(item.name) })).sort((a: any, b: any) => (Number(b.confidence) || 0) - (Number(a.confidence) || 0)); const publicName = names[0]?.name || null; await saveCompany(env, nif, legalName || "", publicName, base.location || base.address || null, names.length ? Number(names[0].confidence) || 0.82 : 0.65); return json({ found: true, cached: false, company: { ...base, legalName, publicNames: names, publicName }, sources_checked: sourcesChecked, provider_results: providerResults, ...(Object.keys(providerErrors).length ? { provider_errors: providerErrors } : {}) }); };
     const nifpt = await run("nif.pt", () => discoverWithNifPt(nif, env));
     if (nifpt?.publicName) return await finish();
