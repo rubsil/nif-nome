@@ -33,8 +33,16 @@ function extractLabeled(text: string, label: string): string | null {
   const re = new RegExp(`${label}\\s*:\\s*([^|<>]{2,220}?)(?=\\s+(?:NIF|NIPC|Morada|Código Postal|Atividade|Forma jurídica|Razão Social|Designação comercial)\\s*:|$)`, "i");
   return cleanValue(text.match(re)?.[1] || null);
 }
+
 function extractFromPage(text: string, nif: string, legalName: string | null, sourceUrl: string): EmpresiteResult | null {
-  if (!text.includes(nif)) return null;
+  // Important: Empresite category/list pages often contain the legal name and
+  // the explicit "Designação comercial" field, but do NOT contain the NIF.
+  // Therefore a page is relevant when it contains either the NIF OR the
+  // exact legal name supplied by the authoritative provider.
+  const hasNif = text.includes(nif);
+  const hasLegalName = !!legalName && keyOf(text).includes(keyOf(legalName));
+  if (!hasNif && !hasLegalName) return null;
+
   const publicName = validName(extractLabeled(text, "Designação\\s+comercial"), legalName);
   const address = extractLabeled(text, "Morada");
   const pageLegal = extractLabeled(text, "Razão\\s+Social");
@@ -42,6 +50,7 @@ function extractFromPage(text: string, nif: string, legalName: string | null, so
   if (!pageLegal && !address && !candidates.length) return null;
   return { source: "empresite", legalName: pageLegal || legalName || null, publicNames: candidates, address, sourceUrl };
 }
+
 function extractSearchUrls(html: string): string[] {
   const urls = new Set<string>();
   const source = decodeHtml(html);
@@ -73,11 +82,10 @@ function extractCommercialNamesNearAnchor(text: string, anchor: string, legalNam
     const end = Math.min(text.length, index + Math.max(3000, anchor.length + 2200));
     const window = text.slice(start, end);
 
-    // Empresite pages/listings have appeared with both accented and unaccented labels.
     const patterns = [
-      /Designa(?:ção|cao)\s+comercial\s*:\s*([^.!?]{3,140})/gi,
-      /Designa(?:ção|cao)\s+comercial\s+([^.!?]{3,140})/gi,
-      /nome\s+comercial\s*:\s*([^.!?]{3,140})/gi
+      /Designa(?:ção|cao)\s+comercial\s*:\s*([^.!?\n]{3,140})/gi,
+      /Designa(?:ção|cao)\s+comercial\s+([^.!?\n]{3,140})/gi,
+      /nome\s+comercial\s*:\s*([^.!?\n]{3,140})/gi
     ];
     for (const pattern of patterns) {
       for (const match of window.matchAll(pattern)) {
@@ -101,7 +109,7 @@ function extractFromSearchText(html: string, nif: string, legalName: string | nu
 }
 
 async function fetchPage(url: string): Promise<string | null> {
-  const response = await fetch(url, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/1.5; public business lookup)", accept: "text/html,application/xhtml+xml" } });
+  const response = await fetch(url, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/1.6; public business lookup)", accept: "text/html,application/xhtml+xml" } });
   if (!response.ok) return null;
   const bytes = await response.arrayBuffer();
   const contentType = response.headers.get("content-type") || "";
@@ -121,11 +129,16 @@ export async function findByNif(nif: string, legalName: string | null): Promise<
   for (const term of terms) {
     const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(term)}`;
     try {
-      const searchResponse = await fetch(searchUrl, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/1.5; public business lookup)", accept: "text/html" } });
+      const searchResponse = await fetch(searchUrl, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/1.6; public business lookup)", accept: "text/html" } });
       if (!searchResponse.ok) continue;
       const html = await searchResponse.text();
+
+      // First inspect the search result snippets themselves. This is useful
+      // for Empresite category pages where the NIF is not indexed but the
+      // legal name and explicit commercial designation are shown together.
       const searchFound = extractFromSearchText(html, nif, legalName, searchUrl);
       if (searchFound?.publicNames.length) return searchFound;
+
       const urls = extractSearchUrls(html).slice(0, 20);
       for (const url of urls) {
         if (visited.has(url)) continue;
