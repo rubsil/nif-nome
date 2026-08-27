@@ -10,19 +10,36 @@ function normalise(value: string): string { return value.normalize("NFKD").repla
 function distanceMeters(lat1: number, lon1: number, lat2: number, lon2: number): number { const r = 6371000; const p1 = lat1 * Math.PI / 180, p2 = lat2 * Math.PI / 180; const dp = (lat2 - lat1) * Math.PI / 180, dl = (lon2 - lon1) * Math.PI / 180; const a = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2; return r * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)); }
 function category(tags: Record<string, string>): string | null { return tags.amenity || tags.shop || tags.tourism || tags.craft || tags.office || tags.leisure || tags.healthcare || null; }
 function addressFromTags(tags: Record<string, string>): string | null { const parts = [tags["addr:street"], tags["addr:housenumber"], tags["addr:postcode"], tags["addr:city"]].filter(Boolean); return parts.length ? parts.join(", ") : null; }
+function postcode(value: string): string { return value.match(/\b\d{4}-\d{3}\b/)?.[0] || ""; }
+function streetAndNumber(value: string): string { return value.replace(/\bC[oó]digo Postal\s*:\s*\d{4}-\d{3}\b/gi, "").replace(/\b\d{4}-\d{3}\b/g, "").replace(/\bPortugal\b/gi, "").replace(/\s+/g, " ").replace(/\s*,\s*$/, "").trim(); }
+async function geocode(query: string): Promise<any | null> {
+  const url = new URL("https://nominatim.openstreetmap.org/search");
+  url.searchParams.set("q", `${query}, Portugal`); url.searchParams.set("format", "jsonv2"); url.searchParams.set("limit", "1"); url.searchParams.set("countrycodes", "pt");
+  const response = await fetch(url.toString(), { headers: { "user-agent": "nif-nome/1.2 (public business lookup; contact via project)", accept: "application/json" } });
+  if (!response.ok) return null;
+  const rows = await response.json<any[]>();
+  return rows[0] || null;
+}
 export async function findNearby(address: string): Promise<{ places: NearbyPlace[]; geocoded: { display_name: string; lat: number; lon: number } | null; source: string }> {
   const q = normalise(address).replace(/\bC[oó]digo Postal\s*:\s*/i, "");
-  const geocodeUrl = new URL("https://nominatim.openstreetmap.org/search");
-  geocodeUrl.searchParams.set("q", `${q}, Portugal`); geocodeUrl.searchParams.set("format", "jsonv2"); geocodeUrl.searchParams.set("limit", "1"); geocodeUrl.searchParams.set("countrycodes", "pt");
-  const geoResponse = await fetch(geocodeUrl.toString(), { headers: { "user-agent": "nif-nome/1.0 (public business lookup)", accept: "application/json" } });
-  if (!geoResponse.ok) throw new Error(`Nominatim HTTP ${geoResponse.status}`);
-  const geo = await geoResponse.json<any[]>();
-  if (!geo.length) return { places: [], geocoded: null, source: "OpenStreetMap" };
-  const lat = Number(geo[0].lat), lon = Number(geo[0].lon);
-  const query = `[out:json][timeout:10];(nwr(around:150,${lat},${lon})["name"]["amenity"];nwr(around:150,${lat},${lon})["name"]["shop"];nwr(around:150,${lat},${lon})["name"]["tourism"];nwr(around:150,${lat},${lon})["name"]["craft"];nwr(around:150,${lat},${lon})["name"]["office"];nwr(around:150,${lat},${lon})["name"]["leisure"];nwr(around:150,${lat},${lon})["name"]["healthcare"];);out center tags;`;
-  const overpass = await fetch("https://overpass-api.de/api/interpreter", { method: "POST", headers: { "content-type": "text/plain; charset=utf-8", "user-agent": "nif-nome/1.0 (public business lookup)" }, body: query });
-  if (!overpass.ok) throw new Error(`Overpass HTTP ${overpass.status}`);
-  const payload = await overpass.json<any>();
+  const pc = postcode(q);
+  const base = streetAndNumber(q);
+  const city = (q.match(/\b(HORTA|CANDEL[AÁ]RIA|MADALENA|PONTA DELGADA|ANGRA DO HERO[IÍ]SMO)\b/i)?.[1] || "").trim();
+  const candidates = [q, base, pc && city ? `${pc} ${city}` : pc, base && city ? `${base}, ${city}` : base].filter((v, i, arr) => v.length >= 5 && arr.indexOf(v) === i);
+  let geo: any | null = null;
+  for (const candidate of candidates) { try { geo = await geocode(candidate); } catch {} if (geo) break; }
+  if (!geo) return { places: [], geocoded: null, source: "OpenStreetMap" };
+  const lat = Number(geo.lat), lon = Number(geo.lon);
+  const query = `[out:json][timeout:15];(nwr(around:150,${lat},${lon})["name"]["amenity"];nwr(around:150,${lat},${lon})["name"]["shop"];nwr(around:150,${lat},${lon})["name"]["tourism"];nwr(around:150,${lat},${lon})["name"]["craft"];nwr(around:150,${lat},${lon})["name"]["office"];nwr(around:150,${lat},${lon})["name"]["leisure"];nwr(around:150,${lat},${lon})["name"]["healthcare"];);out center tags;`;
+  const endpoints = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
+  let payload: any = null;
+  for (const endpoint of endpoints) {
+    try {
+      const overpass = await fetch(endpoint, { method: "POST", headers: { "content-type": "text/plain; charset=utf-8", "user-agent": "nif-nome/1.2 (public business lookup)" }, body: query });
+      if (overpass.ok) { payload = await overpass.json<any>(); break; }
+    } catch {}
+  }
+  if (!payload) throw new Error("Não foi possível consultar os estabelecimentos no OpenStreetMap.");
   const places: NearbyPlace[] = [];
   for (const element of payload.elements || []) {
     const tags = element.tags || {};
@@ -35,5 +52,5 @@ export async function findNearby(address: string): Promise<{ places: NearbyPlace
   places.sort((a, b) => a.distance_m - b.distance_m);
   const unique = new Map<string, NearbyPlace>();
   for (const place of places) { const key = `${place.name.toLocaleLowerCase()}|${place.address || ""}`; if (!unique.has(key)) unique.set(key, place); }
-  return { places: [...unique.values()].slice(0, 15), geocoded: { display_name: geo[0].display_name, lat, lon }, source: "OpenStreetMap" };
+  return { places: [...unique.values()].slice(0, 15), geocoded: { display_name: geo.display_name, lat, lon }, source: "OpenStreetMap" };
 }
