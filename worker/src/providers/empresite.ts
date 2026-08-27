@@ -77,17 +77,14 @@ function extractCommercialNamesNearAnchor(text: string, anchor: string, legalNam
     const start = Math.max(0, index - 1000);
     const end = Math.min(text.length, index + Math.max(5000, anchor.length + 3500));
     const window = text.slice(start, end);
-
     const patterns = [
       /Designa(?:ção|cao)\s+comercial\s*:\s*([^.!?\n]{3,140})/gi,
       /Designa(?:ção|cao)\s+comercial\s+([^.!?\n]{3,140})/gi,
       /nome\s+comercial\s*:\s*([^.!?\n]{3,140})/gi
     ];
-    for (const pattern of patterns) {
-      for (const match of window.matchAll(pattern)) {
-        const candidate = validName(match[1], legalName);
-        if (candidate) result.push(candidate);
-      }
+    for (const pattern of patterns) for (const match of window.matchAll(pattern)) {
+      const candidate = validName(match[1], legalName);
+      if (candidate) result.push(candidate);
     }
     from = index + needle.length;
   }
@@ -119,8 +116,21 @@ function buildSearchTerms(nif: string, legalName: string | null): string[] {
   return [...terms];
 }
 
+function buildDirectCategoryUrls(legalName: string | null): string[] {
+  if (!legalName) return [];
+  const n = keyOf(legalName);
+  const urls: string[] = [];
+  // Empresite exposes stable activity/category pages. These are especially useful
+  // when search engines do not index the individual company page yet.
+  if (/pizzaria|pizza/.test(n)) urls.push("https://empresite.jornaldenegocios.pt/Actividade/PIZZARIA/");
+  if (/restaurante|restauracao|restaura/.test(n)) urls.push("https://empresite.jornaldenegocios.pt/Actividade/RESTAURANTE/");
+  if (/farmacia/.test(n)) urls.push("https://empresite.jornaldenegocios.pt/Actividade/FARMACIA/");
+  if (/cafe|cafes/.test(n)) urls.push("https://empresite.jornaldenegocios.pt/Actividade/CAFE/");
+  return urls;
+}
+
 async function fetchPage(url: string): Promise<string | null> {
-  const response = await fetch(url, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/1.7; public business lookup)", accept: "text/html,application/xhtml+xml" } });
+  const response = await fetch(url, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/1.8; public business lookup)", accept: "text/html,application/xhtml+xml" } });
   if (!response.ok) return null;
   const bytes = await response.arrayBuffer();
   const contentType = response.headers.get("content-type") || "";
@@ -130,17 +140,30 @@ async function fetchPage(url: string): Promise<string | null> {
 }
 
 export async function findByNif(nif: string, legalName: string | null): Promise<EmpresiteResult | null> {
-  const terms = buildSearchTerms(nif, legalName);
   const visited = new Set<string>();
+
+  // First use deterministic Empresite category pages. Unlike web-search snippets,
+  // these pages contain the company card and its explicit "Designação comercial".
+  for (const url of buildDirectCategoryUrls(legalName)) {
+    if (visited.has(url)) continue;
+    visited.add(url);
+    try {
+      const page = await fetchPage(url);
+      if (!page) continue;
+      const found = extractFromPage(page, nif, legalName, url);
+      if (found?.publicNames.length) return found;
+    } catch {}
+  }
+
+  const terms = buildSearchTerms(nif, legalName);
   for (const term of terms) {
     const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(term)}`;
     try {
-      const searchResponse = await fetch(searchUrl, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/1.7; public business lookup)", accept: "text/html" } });
+      const searchResponse = await fetch(searchUrl, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/1.8; public business lookup)", accept: "text/html" } });
       if (!searchResponse.ok) continue;
       const html = await searchResponse.text();
       const searchFound = extractFromSearchText(html, nif, legalName, searchUrl);
       if (searchFound?.publicNames.length) return searchFound;
-
       const urls = extractSearchUrls(html).slice(0, 30);
       for (const url of urls) {
         if (visited.has(url)) continue;
