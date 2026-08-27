@@ -9,14 +9,50 @@ function sourceTypeLabel(type) { return ({ government: 'Governo', official: 'Ofi
 function renderPublicName(name) { const sources = name.sources ?? []; const confidence = Number(name.confidence) || 0; const info = confidenceInfo(confidence); const sourceHtml = sources.length ? `<ul class="source-list">${sources.map(source => `<li><a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(source.name)}</a><span>${escapeHtml(sourceTypeLabel(source.source_type))}</span></li>`).join('')}</ul>` : '<p class="muted">Ainda sem fontes públicas associadas.</p>'; return `<article class="public-name-card"><div class="public-name">${escapeHtml(name.name)}</div><div class="name-type">${escapeHtml(name.type || 'nome público')}</div><div class="confidence-row"><span class="confidence ${info.className}">✓ ${info.label}</span><strong>${Math.round(confidence * 100)}%</strong></div><div class="sources"><strong>Fontes e evidências</strong>${sourceHtml}</div></article>`; }
 function normalizeMapsText(value) { return String(value || '').replace(/&nbsp;|&#160;/gi, ' ').replace(/&amp;/gi, '&').replace(/\bCódigo Postal\s*:\s*/gi, '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim(); }
 function extractPostalCode(value) { const match = String(value || '').match(/\b\d{4}-\d{3}\b/); return match ? match[0] : ''; }
-function mapsAddress(data) { const raw = data.address || data.location || ''; const normalized = normalizeMapsText(raw); const postalCode = data.postalCode || extractPostalCode(raw) || extractPostalCode(data.location); let address = normalized.replace(/\s*,?\s*Portugal\s*$/i, '').replace(/\s+(HRT|MAD)$/i, '').trim(); if (postalCode && !address.includes(postalCode)) address = `${address}, ${postalCode}`; return `${address}, Portugal`.replace(/,\s*,/g, ','); }
+function mapsAddress(data) {
+  const raw = data.address || data.location || '';
+  const normalized = normalizeMapsText(raw);
+  const postalCode = data.postalCode || extractPostalCode(raw) || extractPostalCode(data.location);
+  let address = normalized
+    .replace(/\b(?:Código Postal|Codigo Postal)\s*:\s*/gi, '')
+    .replace(/\s*,?\s*Portugal\s*$/i, '')
+    .replace(/\s+(HRT|MAD)$/i, '')
+    .replace(/\s*,\s*$/, '')
+    .trim();
+  if (postalCode && !address.includes(postalCode)) address = `${address}, ${postalCode}`;
+  return `${address}, Portugal`.replace(/,\s*,/g, ',');
+}
 function mapsSearchUrl(query) { return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`; }
 function mapsUrl(data) { return mapsSearchUrl(mapsAddress(data)); }
+function nearbyMapsUrl(address) {
+  const query = `estabelecimentos perto de ${mapsAddress({ address })}`;
+  return mapsSearchUrl(query);
+}
 function renderNearby(place) { const address = place.address || `${place.lat},${place.lon}`; const mapUrl = mapsSearchUrl(`${place.name}, ${address}`); const distance = place.distance_m < 1000 ? `${place.distance_m} m` : `${(place.distance_m / 1000).toFixed(1)} km`; return `<li class="nearby-place"><div><strong>${escapeHtml(place.name)}</strong><span>${escapeHtml(place.category || 'Estabelecimento')} · ${escapeHtml(distance)}</span>${place.address ? `<small>${escapeHtml(place.address)}</small>` : ''}</div><a href="${escapeHtml(mapUrl)}" target="_blank" rel="noopener noreferrer">Maps</a></li>`; }
-async function loadNearby(button) { const address = button.dataset.address || ''; const box = button.closest('.map-actions').querySelector('.nearby-results'); box.innerHTML = '<div class="muted">A procurar estabelecimentos até cerca de 150 m…</div>'; button.disabled = true; try { const response = await fetch(`${API_BASE}/api/nearby?address=${encodeURIComponent(address)}`, { cache: 'no-store' }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Não foi possível consultar a localização.'); if (!data.places?.length) { const mapQuery = mapsAddress({ address }); box.innerHTML = `<div class="muted">Não encontrámos estabelecimentos identificados num raio de 150 m no OpenStreetMap.</div><a class="map-link secondary" href="${escapeHtml(mapsSearchUrl(mapQuery))}" target="_blank" rel="noopener noreferrer">Abrir a morada no Google Maps</a>`; return; } box.innerHTML = `<div class="nearby-title">Estabelecimentos identificados num raio de cerca de 150 m</div><ul class="nearby-list">${data.places.map(renderNearby).join('')}</ul><div class="nearby-attribution">Dados de estabelecimentos: OpenStreetMap · usados apenas como pista de localização, não como prova do nome comercial.</div>`; } catch (error) { box.innerHTML = `<div class="muted">${escapeHtml(error.message || 'Erro ao procurar estabelecimentos.')}</div>`; } finally { button.disabled = false; } }
+async function loadNearby(button) {
+  const address = button.dataset.address || '';
+  const box = button.closest('.map-actions').querySelector('.nearby-results');
+  const fallbackUrl = nearbyMapsUrl(address);
+  box.innerHTML = `<div class="muted">A procurar estabelecimentos até cerca de 300 m…</div>`;
+  button.disabled = true;
+  try {
+    const response = await fetch(`${API_BASE}/api/nearby?address=${encodeURIComponent(address)}`, { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Não foi possível consultar a localização.');
+    if (!data.places?.length) {
+      const mapQuery = mapsAddress({ address });
+      box.innerHTML = `<div class="muted">Não encontrámos estabelecimentos identificados num raio de 300 m no OpenStreetMap.</div><div class="map-buttons"><a class="map-link secondary" href="${escapeHtml(mapsSearchUrl(mapQuery))}" target="_blank" rel="noopener noreferrer">📍 Abrir a morada no Google Maps</a><a class="map-link secondary" href="${escapeHtml(fallbackUrl)}" target="_blank" rel="noopener noreferrer">🔎 Procurar estabelecimentos no Google Maps</a></div>`;
+      return;
+    }
+    box.innerHTML = `<div class="nearby-title">Estabelecimentos identificados num raio de cerca de 300 m</div><ul class="nearby-list">${data.places.map(renderNearby).join('')}</ul><div class="nearby-attribution">Dados de estabelecimentos: OpenStreetMap · usados apenas como pista de localização, não como prova do nome comercial.</div>`;
+  } catch (error) {
+    box.innerHTML = `<div class="muted">Não foi possível obter a lista automática de estabelecimentos.</div><div class="map-buttons"><a class="map-link secondary" href="${escapeHtml(fallbackUrl)}" target="_blank" rel="noopener noreferrer">🔎 Procurar estabelecimentos no Google Maps</a></div>`;
+  } finally { button.disabled = false; }
+}
 function bindNearbyButtons() { result.querySelectorAll('[data-nearby-address]').forEach(button => button.addEventListener('click', () => loadNearby(button))); }
 function renderCompany(data) {
-  const names = (data.publicNames ?? []).filter(name => name?.name && (!data.legalName || String(name.name).normalize('NFKD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase() !== String(data.legalName).normalize('NFKD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase()));
+  const legalKey = data.legalName ? String(data.legalName).normalize('NFKD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase() : '';
+  const names = (data.publicNames ?? []).filter(name => { if (!name?.name) return false; const key = String(name.name).normalize('NFKD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase(); return key !== legalKey; });
   const primary = names[0];
   const address = data.address || data.location;
   const displayName = primary?.name || data.legalName || 'Empresa identificada';
