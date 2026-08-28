@@ -53,9 +53,8 @@ function validName(value: string | null, legalName: string | null): string | nul
   return v;
 }
 
-// Extração ultra-precisa calibrada pelo Inspector do Chrome
 function extractFromHtml(html: string, legalName: string): string | null {
-  // Captura a tag <td class="td-datos-externos"> logo a seguir ao <th>Designação comercial</th>
+  // Procura cirúrgica pela classe exata da célula que viste no Inspector
   const regexExact = /Designa(?:ção|cao)\s+comercial[\s\S]*?<td[^>]*class=["'][^"']*td-datos-externos[^"']*["'][^>]*>([\s\S]*?)<\/td>/i;
   const matchExact = html.match(regexExact);
 
@@ -64,17 +63,12 @@ function extractFromHtml(html: string, legalName: string): string | null {
     if (candidate) return candidate;
   }
 
-  // Fallback genérico para a mesma tabela <tr>
-  const regexRow = /<tr[^>]*class=["'][^"']*tr-datos-externos[^"']*["'][^>]*>([\s\S]*?)<\/tr>/gi;
-  for (const match of html.matchAll(regexRow)) {
-    const rowContent = match[1];
-    if (/Designa(?:ção|cao)\s+comercial/i.test(rowContent)) {
-      const tdMatch = rowContent.match(/<td[^>]*>([\s\S]*?)<\/td>/i);
-      if (tdMatch && tdMatch[1]) {
-        const candidate = validName(clean(tdMatch[1]), legalName);
-        if (candidate) return candidate;
-      }
-    }
+  // Fallback em texto limpo
+  const regexText = /Designa(?:ção|cao)\s+comercial\s*:\s*([^|<>\n\r]{3,100})/i;
+  const matchText = clean(html).match(regexText);
+  if (matchText && matchText[1]) {
+    const candidate = validName(matchText[1], legalName);
+    if (candidate) return candidate;
   }
 
   return null;
@@ -82,12 +76,20 @@ function extractFromHtml(html: string, legalName: string): string | null {
 
 function generatePossibleSlugs(legalName: string): string[] {
   const full = slug(legalName);
-  const withoutSuffix = legalName.replace(/,?\s+(unipessoal|sociedade|lda|sa|s\.a\.|unipessoal\s+lda).*$/i, "").trim();
-  const sWithoutSuffix = slug(withoutSuffix);
+  
+  // Remove expressões como ", UNIPESSOAL, LDA" ou "SOCIEDADE UNIPESSOAL LDA"
+  const cleanLegal = legalName
+    .replace(/,?\s+(unipessoal|sociedade|lda|sa|s\.a\.|unipessoal\s+lda).*$/i, "")
+    .trim();
+  const sClean = slug(cleanLegal);
+
+  // Remove apenas o sufixo LDA/SA mantendo o resto
+  const sWithoutSuffixOnly = slug(legalName.replace(/,?\s+(lda|sa|s\.a\.).*$/i, "").trim());
 
   return [
-    `https://empresite.jornaldenegocios.pt/${sWithoutSuffix}.html`,
-    `https://empresite.jornaldenegocios.pt/${full}.html`
+    `https://empresite.jornaldenegocios.pt/${sClean}.html`,              // PIZZARIA-ISAPIPO.html
+    `https://empresite.jornaldenegocios.pt/${sWithoutSuffixOnly}.html`, // PIZZARIA-ISAPIPO-UNIPESSOAL.html
+    `https://empresite.jornaldenegocios.pt/${full}.html`                // PIZZARIA-ISAPIPO-UNIPESSOAL-LDA.html
   ];
 }
 
@@ -127,11 +129,11 @@ export async function findByNif(nif: string, legalName: string | null): Promise<
     } catch {}
   }
 
-  // Fallback via Jina Reader
+  // Fallback usando Jina Reader caso haja bloqueio Cloudflare/Bot
   for (const url of urls) {
     try {
       const response = await fetch(`https://r.jina.ai/${url}`, {
-        headers: { "user-agent": "nif-nome/2.9", accept: "text/plain" }
+        headers: { "user-agent": "nif-nome/3.0", accept: "text/plain" }
       });
       if (!response.ok) continue;
       const text = await response.text();
