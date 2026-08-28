@@ -9,29 +9,42 @@ import { findNearby } from "./providers/nearby";
 export interface Env { DB: D1Database; ENVIRONMENT: string; ASSETS: Fetcher; NIFPT_API_KEY?: string; }
 
 type Evidence = { name: string; type?: string; confidence: number; sources: { name: string; source_type?: string; url?: string }[] };
-
 type Result = { nif: string; legalName: string | null; publicName: string | null; publicNames: Evidence[]; location: string | null; address: string | null; website: string | null; activity: unknown; cae: unknown; source: string; sourceUrl?: string; requestDate?: string };
 
 function corsHeaders() { return { "access-control-allow-origin": "*", "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type" }; }
 function json(data: unknown, init: ResponseInit = {}) { return new Response(JSON.stringify(data), { ...init, headers: { "content-type": "application/json; charset=utf-8", ...(init.headers || {}), ...corsHeaders() } }); }
 function normaliseText(v: string) { return v.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toLocaleLowerCase(); }
+
 function cleanLegalName(value: unknown): string | null {
   if (typeof value !== "string") return null;
   let v = value.replace(/\s+/g, " ").trim();
   if (!v) return null;
+
+  // Several directories repeat the same legal name twice. Detect the repeat
+  // by words, not by character count, so punctuation/Unicode differences do
+  // not leave duplicated names in the UI or database.
+  const words = v.split(" ");
+  if (words.length >= 4 && words.length % 2 === 0) {
+    const mid = words.length / 2;
+    const first = words.slice(0, mid).join(" ");
+    const second = words.slice(mid).join(" ");
+    if (normaliseText(first) === normaliseText(second)) v = first;
+  }
+
   const parts = v.split(/\s{2,}/);
   if (parts.length === 2 && normaliseText(parts[0]) === normaliseText(parts[1])) v = parts[0];
-  const half = Math.floor(v.length / 2);
-  if (v.length > 20 && v.length % 2 === 0 && normaliseText(v.slice(0, half)) === normaliseText(v.slice(half))) v = v.slice(0, half).trim();
   return v;
 }
+
 function cleanPublicName(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const v = value.replace(/\s+/g, " ").trim();
   if (v.length < 3 || v.length > 120) return null;
   const n = normaliseText(v);
+  // Reject page chrome and field labels, but do NOT blacklist ordinary words
+  // such as "Home", "English" or "Spanish": they can be legitimate names.
   if (/^s e public/.test(n) || /licenciada|lider no mercado|informacao para negocios|relatorio gratis|relatorio gratuito/.test(n)) return null;
-  if (/^(english|spanish|home|search|login|register|privacy|cookies|nif|nipc|morada|atividade|designacao comercial|denominacao|razao social)$/.test(n)) return null;
+  if (/^(search|login|register|privacy|cookies|nif|nipc|morada|atividade|designacao comercial|denominacao|razao social)$/.test(n)) return null;
   if (v.split(/\s+/).length > 15) return null;
   return v;
 }
@@ -57,13 +70,15 @@ function mergeResult(base: Result | null, incoming: Partial<Result> | null): Res
   return { ...base, ...incoming, legalName: cleanLegalName(incoming.legalName || base.legalName), publicNames: mergeEvidence(base.publicNames || [], incoming.publicNames || []), publicName: null };
 }
 
-// The evidence tables were introduced after the original Worker schema. Cloudflare's
-// dashboard deploy command runs `wrangler deploy`, but does not automatically apply
-// D1 migrations. Create the small evidence schema lazily so a new deployment remains
-// usable even before the migration is applied manually.
 async function ensureEvidenceSchema(env: Env) {
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS public_names (id INTEGER PRIMARY KEY AUTOINCREMENT, nif TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'nome comercial', confidence REAL NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(nif, name))`).run();
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS name_evidence (id INTEGER PRIMARY KEY AUTOINCREMENT, public_name_id INTEGER NOT NULL, source_name TEXT NOT NULL, source_type TEXT, source_url TEXT, confidence REAL NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), FOREIGN KEY(public_name_id) REFERENCES public_names(id) ON DELETE CASCADE, UNIQUE(public_name_id, source_name, source_url))`).run();
+}
+
+async function clearEvidence(env: Env, nif: string) {
+  await ensureEvidenceSchema(env);
+  await env.DB.prepare(`DELETE FROM name_evidence WHERE public_name_id IN (SELECT id FROM public_names WHERE nif=?)`).bind(nif).run();
+  await env.DB.prepare(`DELETE FROM public_names WHERE nif=?`).bind(nif).run();
 }
 
 async function saveCompany(env: Env, r: Result, evidence: Evidence[]) {
@@ -104,6 +119,15 @@ export default { async fetch(request:Request,env:Env):Promise<Response>{
     const row=await env.DB.prepare("SELECT * FROM companies WHERE nif=? LIMIT 1").bind(nif).first<any>();
     let evid=await cachedEvidence(env,nif);
     if(row && !refresh && evid.length){return json({found:true,cached:true,company:payload({nif,legalName:row.legal_name,publicName:evid[0]?.name||null,publicNames:evid,location:row.location||null,address:row.address||row.location||null,website:row.website||null,activity:null,cae:null,source:"cache"}),sources_checked:["cache"]});}
+
+    // A refresh must not inherit an old false-positive name. The previous
+    // implementation kept stale English/Spanish/etc. evidence in D1 forever,
+    // even after the extraction logic was fixed.
+    if (refresh) {
+      try { await clearEvidence(env, nif); } catch {}
+      evid = [];
+    }
+
     let result:Result|null=row?{nif,legalName:cleanLegalName(row.legal_name),publicName:null,publicNames:evid,location:row.location||null,address:row.address||row.location||null,website:row.website||null,activity:null,cae:null,source:"cache"}:null;
     const checked:string[]=[], providerResults:Record<string,string>={}, errors:Record<string,string>={};
     const run=async(name:string,fn:()=>Promise<Partial<Result>|null>)=>{checked.push(name);try{const x=await fn();providerResults[name]=x?"found":"not_found";result=mergeResult(result,x);return x;}catch(e){providerResults[name]="error";errors[name]=String(e).replace(/[\r\n]/g," ").slice(0,200);return null;}};
