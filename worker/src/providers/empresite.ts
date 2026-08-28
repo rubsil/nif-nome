@@ -42,9 +42,8 @@ function validName(value: string | null, legalName: string | null): string | nul
   return v;
 }
 
-// Extrai especificamente o texto da Designação Comercial no HTML
 function extractDesignacaoComercial(html: string, legalName: string | null): string | null {
-  // Regex 1: Célula exata conforme o Inspector da tua imagem
+  // 1. Procurar pela célula exata da imagem (<td class="td-datos-externos">)
   const exactRegex = /Designa(?:ção|cao)\s+comercial[\s\S]*?<td[^>]*class=["'][^"']*td-datos-externos[^"']*["'][^>]*>([\s\S]*?)<\/td>/i;
   const matchExact = html.match(exactRegex);
   if (matchExact && matchExact[1]) {
@@ -52,7 +51,7 @@ function extractDesignacaoComercial(html: string, legalName: string | null): str
     if (candidate) return candidate;
   }
 
-  // Regex 2: Fallback para qualquer tag <td>/<span> a seguir a Designação comercial
+  // 2. Fallback para estrutura genérica de tabela
   const fallbackRegex = /Designa(?:ção|cao)\s+comercial[\s\S]*?<td[^>]*>([\s\S]*?)<\/td>/i;
   const matchFallback = html.match(fallbackRegex);
   if (matchFallback && matchFallback[1]) {
@@ -63,38 +62,31 @@ function extractDesignacaoComercial(html: string, legalName: string | null): str
   return null;
 }
 
-// Gera os slugs prováveis do Empresite a partir da Razão Social
-function buildPossibleUrls(legalName: string): string[] {
-  const norm = (str: string) => str.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/&/g, " e ").replace(/[^a-zA-Z0-9]+/g, " ").trim().toUpperCase().replace(/\s+/g, "-");
-
-  // Nome limpo (Sem sufixos tipo UNIPESSOAL, LDA, S.A.)
-  const baseName = legalName.replace(/,?\s+(unipessoal|sociedade|lda|sa|s\.a\.|unipessoal\s+lda).*$/i, "").trim();
-
-  return [
-    `https://empresite.jornaldenegocios.pt/${norm(baseName)}.html`, // ex: PIZZARIA-ISAPIPO.html
-    `https://empresite.jornaldenegocios.pt/${norm(legalName)}.html` // ex: PIZZARIA-ISAPIPO-UNIPESSOAL-LDA.html
-  ];
-}
-
 export async function findByNif(nif: string, legalName: string | null): Promise<EmpresiteResult | null> {
-  if (!legalName) return null;
+  // Lista de URLs a tentar (incluindo pesquisa direta pelo NIF no Empresite)
+  const urlsToTry: string[] = [
+    `https://empresite.jornaldenegocios.pt/Buscar/${encodeURIComponent(nif)}`
+  ];
 
-  const urls = buildPossibleUrls(legalName);
+  if (legalName) {
+    const cleanLegal = legalName.replace(/,?\s+(unipessoal|sociedade|lda|sa|s\.a\.|unipessoal\s+lda).*$/i, "").trim();
+    const slugName = cleanLegal.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/&/g, " e ").replace(/[^a-zA-Z0-9]+/g, " ").trim().toUpperCase().replace(/\s+/g, "-");
+    urlsToTry.unshift(`https://empresite.jornaldenegocios.pt/${slugName}.html`);
+  }
 
-  for (const url of urls) {
+  for (const url of urlsToTry) {
     try {
       const response = await fetch(url, {
         headers: {
           "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-          "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-          "accept-language": "pt-PT,pt;q=0.9,en-US;q=0.8,en;q=0.7"
-        }
+          "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        },
+        redirect: "follow"
       });
 
       if (!response.ok) continue;
 
       const buffer = await response.arrayBuffer();
-      // O Empresite costuma usar iso-8859-1 (windows-1252)
       const decoder = new TextDecoder("iso-8859-1");
       const html = decoder.decode(buffer);
 
@@ -102,10 +94,10 @@ export async function findByNif(nif: string, legalName: string | null): Promise<
       if (publicName) {
         return {
           source: "empresite",
-          legalName,
+          legalName: legalName || null,
           publicNames: [publicName],
           address: null,
-          sourceUrl: url
+          sourceUrl: response.url || url
         };
       }
     } catch {}
