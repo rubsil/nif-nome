@@ -42,79 +42,74 @@ function validName(value: string | null, legalName: string | null): string | nul
   return v;
 }
 
-function extractNameFromText(text: string, legalName: string | null): string | null {
-  // 1. Procura na estrutura HTML exata (<td class="td-datos-externos">)
-  const regexExact = /Designa(?:ção|cao)\s+comercial[\s\S]*?<td[^>]*class=["'][^"']*td-datos-externos[^"']*["'][^>]*>([\s\S]*?)<\/td>/i;
-  const matchExact = text.match(regexExact);
+// Extrai especificamente o texto da Designação Comercial no HTML
+function extractDesignacaoComercial(html: string, legalName: string | null): string | null {
+  // Regex 1: Célula exata conforme o Inspector da tua imagem
+  const exactRegex = /Designa(?:ção|cao)\s+comercial[\s\S]*?<td[^>]*class=["'][^"']*td-datos-externos[^"']*["'][^>]*>([\s\S]*?)<\/td>/i;
+  const matchExact = html.match(exactRegex);
   if (matchExact && matchExact[1]) {
     const candidate = validName(clean(matchExact[1]), legalName);
     if (candidate) return candidate;
   }
 
-  // 2. Procura em formato Markdown/Texto plano
-  const regexText = /Designa(?:ção|cao)\s+comercial\s*[:|]\s*([^\r\n|]{3,100})/i;
-  const matchText = text.match(regexText);
-  if (matchText && matchText[1]) {
-    const candidate = validName(clean(matchText[1]), legalName);
+  // Regex 2: Fallback para qualquer tag <td>/<span> a seguir a Designação comercial
+  const fallbackRegex = /Designa(?:ção|cao)\s+comercial[\s\S]*?<td[^>]*>([\s\S]*?)<\/td>/i;
+  const matchFallback = html.match(fallbackRegex);
+  if (matchFallback && matchFallback[1]) {
+    const candidate = validName(clean(matchFallback[1]), legalName);
     if (candidate) return candidate;
   }
 
   return null;
 }
 
-// Procura no DuckDuckGo o URL exato do Empresite para este NIF
-async function findEmpresiteUrlByNif(nif: string): Promise<string | null> {
-  try {
-    const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(`"${nif}" site:empresite.jornaldenegocios.pt`)}`;
-    const res = await fetch(searchUrl, {
-      headers: { "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36" }
-    });
-    if (!res.ok) return null;
-    const html = await res.text();
-    
-    const match = html.match(/href=["']([^"']*empresite\.jornaldenegocios\.pt\/[^"']+\.html)["']/i);
-    if (match && match[1]) {
-      const rawUrl = match[1];
-      const uddg = new URL(rawUrl, "https://html.duckduckgo.com").searchParams.get("uddg");
-      return uddg ? decodeURIComponent(uddg) : rawUrl;
-    }
-  } catch {}
-  return null;
+// Gera os slugs prováveis do Empresite a partir da Razão Social
+function buildPossibleUrls(legalName: string): string[] {
+  const norm = (str: string) => str.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/&/g, " e ").replace(/[^a-zA-Z0-9]+/g, " ").trim().toUpperCase().replace(/\s+/g, "-");
+
+  // Nome limpo (Sem sufixos tipo UNIPESSOAL, LDA, S.A.)
+  const baseName = legalName.replace(/,?\s+(unipessoal|sociedade|lda|sa|s\.a\.|unipessoal\s+lda).*$/i, "").trim();
+
+  return [
+    `https://empresite.jornaldenegocios.pt/${norm(baseName)}.html`, // ex: PIZZARIA-ISAPIPO.html
+    `https://empresite.jornaldenegocios.pt/${norm(legalName)}.html` // ex: PIZZARIA-ISAPIPO-UNIPESSOAL-LDA.html
+  ];
 }
 
 export async function findByNif(nif: string, legalName: string | null): Promise<EmpresiteResult | null> {
-  // 1. Encontra o URL direto do perfil da empresa usando o NIF
-  let targetUrl = await findEmpresiteUrlByNif(nif);
+  if (!legalName) return null;
 
-  // Fallback de URL se a pesquisa falhar e tivermos legalName
-  if (!targetUrl && legalName) {
-    const cleanLegal = legalName.replace(/,?\s+(unipessoal|sociedade|lda|sa|s\.a\.).*$/i, "").trim();
-    const sClean = cleanLegal.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]+/g, "-").toUpperCase();
-    targetUrl = `https://empresite.jornaldenegocios.pt/${sClean}.html`;
-  }
+  const urls = buildPossibleUrls(legalName);
 
-  if (!targetUrl) return null;
+  for (const url of urls) {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+          "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "accept-language": "pt-PT,pt;q=0.9,en-US;q=0.8,en;q=0.7"
+        }
+      });
 
-  // 2. Usa o Jina Reader para extrair o conteúdo contornando bloqueios de bots
-  try {
-    const jinaRes = await fetch(`https://r.jina.ai/${targetUrl}`, {
-      headers: { "user-agent": "Mozilla/5.0", accept: "text/plain" }
-    });
-    
-    if (jinaRes.ok) {
-      const text = await jinaRes.text();
-      const publicName = extractNameFromText(text, legalName);
+      if (!response.ok) continue;
+
+      const buffer = await response.arrayBuffer();
+      // O Empresite costuma usar iso-8859-1 (windows-1252)
+      const decoder = new TextDecoder("iso-8859-1");
+      const html = decoder.decode(buffer);
+
+      const publicName = extractDesignacaoComercial(html, legalName);
       if (publicName) {
         return {
           source: "empresite",
           legalName,
           publicNames: [publicName],
           address: null,
-          sourceUrl: targetUrl
+          sourceUrl: url
         };
       }
-    }
-  } catch {}
+    } catch {}
+  }
 
   return null;
 }
