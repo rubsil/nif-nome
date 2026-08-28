@@ -37,112 +37,95 @@ function slug(value: string): string {
   return value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/&/g, " e ").replace(/[^a-zA-Z0-9]+/g, " ").trim().toUpperCase().replace(/\s+/g, "-");
 }
 
-function cleanValue(value: string | null): string | null {
+function validName(value: string | null, legalName: string | null): string | null {
   if (!value) return null;
   const v = decodeHtml(value).replace(/\s+/g, " ").replace(/^[\-–—:|]+|[\-–—:|]+$/g, "").trim();
-  return v || null;
-}
-
-function validName(value: string | null, legalName: string | null): string | null {
-  const v = cleanValue(value);
   if (!v || v.length < 3 || v.length > 120) return null;
   if (legalName && keyOf(v) === keyOf(legalName)) return null;
   if (/^(nif|nipc|morada|atividade|código postal|codigo postal|designação comercial|denominação|razão social)$/i.test(v)) return null;
-  if (/^s e publicações legais\b|^s e publicacoes legais\b/i.test(v)) return null;
-  if (/^(relatório|relatorio|empresa|pesquisa|search|login|register|privacy|cookies)$/i.test(v)) return null;
+  if (/^s e publicações legais\b/i.test(v)) return null;
   return v;
 }
 
-function extractFromHtml(html: string, legalName: string): string | null {
-  // Procura cirúrgica pela classe exata da célula que viste no Inspector
+// Extrai o nome tanto de HTML bruto como de texto formatado (Jina)
+function extractNameFromText(text: string, legalName: string): string | null {
+  // 1. Procura pela estrutura exata no HTML (td.td-datos-externos)
   const regexExact = /Designa(?:ção|cao)\s+comercial[\s\S]*?<td[^>]*class=["'][^"']*td-datos-externos[^"']*["'][^>]*>([\s\S]*?)<\/td>/i;
-  const matchExact = html.match(regexExact);
-
+  const matchExact = text.match(regexExact);
   if (matchExact && matchExact[1]) {
     const candidate = validName(clean(matchExact[1]), legalName);
     if (candidate) return candidate;
   }
 
-  // Fallback em texto limpo
-  const regexText = /Designa(?:ção|cao)\s+comercial\s*:\s*([^|<>\n\r]{3,100})/i;
-  const matchText = clean(html).match(regexText);
+  // 2. Procura em formato Markdown/Texto plano (Ex: "Designação comercial : PIZZARIA PAPA PIZZA")
+  const regexText = /Designa(?:ção|cao)\s+comercial\s*[:|]\s*([^\r\n|]{3,100})/i;
+  const matchText = text.match(regexText);
   if (matchText && matchText[1]) {
-    const candidate = validName(matchText[1], legalName);
+    const candidate = validName(clean(matchText[1]), legalName);
     if (candidate) return candidate;
   }
 
   return null;
 }
 
-function generatePossibleSlugs(legalName: string): string[] {
-  const full = slug(legalName);
-  
-  // Remove expressões como ", UNIPESSOAL, LDA" ou "SOCIEDADE UNIPESSOAL LDA"
-  const cleanLegal = legalName
-    .replace(/,?\s+(unipessoal|sociedade|lda|sa|s\.a\.|unipessoal\s+lda).*$/i, "")
-    .trim();
+// Gera os URLs prováveis do Empresite
+function getTargetUrls(legalName: string): string[] {
+  const cleanLegal = legalName.replace(/,?\s+(unipessoal|sociedade|lda|sa|s\.a\.|unipessoal\s+lda).*$/i, "").trim();
   const sClean = slug(cleanLegal);
-
-  // Remove apenas o sufixo LDA/SA mantendo o resto
-  const sWithoutSuffixOnly = slug(legalName.replace(/,?\s+(lda|sa|s\.a\.).*$/i, "").trim());
+  const full = slug(legalName);
 
   return [
-    `https://empresite.jornaldenegocios.pt/${sClean}.html`,              // PIZZARIA-ISAPIPO.html
-    `https://empresite.jornaldenegocios.pt/${sWithoutSuffixOnly}.html`, // PIZZARIA-ISAPIPO-UNIPESSOAL.html
-    `https://empresite.jornaldenegocios.pt/${full}.html`                // PIZZARIA-ISAPIPO-UNIPESSOAL-LDA.html
+    `https://empresite.jornaldenegocios.pt/${sClean}.html`,
+    `https://empresite.jornaldenegocios.pt/${full}.html`
   ];
 }
 
-async function fetchPage(url: string): Promise<string | null> {
-  const response = await fetch(url, { 
-    headers: { 
-      "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", 
-      accept: "text/html,application/xhtml+xml" 
-    } 
-  });
-  if (!response.ok) return null;
-  const bytes = await response.arrayBuffer();
-  const type = response.headers.get("content-type") || "";
-  const charset = /charset=([^;]+)/i.exec(type)?.[1]?.trim().toLowerCase();
-  return new TextDecoder(charset === "utf-8" ? "utf-8" : "windows-1252").decode(bytes);
+// Tenta obter o conteúdo da página ignorando o bloqueio de bots via proxy Jina Reader
+async function fetchPageWithBypass(url: string): Promise<string | null> {
+  // Tentativa 1: Via Jina Reader (Garante bypass aos bloqueios do Empresite)
+  try {
+    const jinaRes = await fetch(`https://r.jina.ai/${url}`, {
+      headers: { "user-agent": "Mozilla/5.0", accept: "text/plain" }
+    });
+    if (jinaRes.ok) {
+      const text = await jinaRes.text();
+      if (text && text.length > 200) return text;
+    }
+  } catch {}
+
+  // Tentativa 2: Fetch direto simples
+  try {
+    const directRes = await fetch(url, {
+      headers: {
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
+        accept: "text/html"
+      }
+    });
+    if (directRes.ok) return await directRes.text();
+  } catch {}
+
+  return null;
 }
 
 export async function findByNif(nif: string, legalName: string | null): Promise<EmpresiteResult | null> {
   if (!legalName) return null;
-  const urls = generatePossibleSlugs(legalName);
 
-  for (const url of urls) {
-    try {
-      const html = await fetchPage(url);
-      if (!html) continue;
+  const targetUrls = getTargetUrls(legalName);
 
-      const name = extractFromHtml(html, legalName);
-      if (name) {
-        return {
-          source: "empresite",
-          legalName,
-          publicNames: [name],
-          address: null,
-          sourceUrl: url
-        };
-      }
-    } catch {}
-  }
+  for (const url of targetUrls) {
+    const content = await fetchPageWithBypass(url);
+    if (!content) continue;
 
-  // Fallback usando Jina Reader caso haja bloqueio Cloudflare/Bot
-  for (const url of urls) {
-    try {
-      const response = await fetch(`https://r.jina.ai/${url}`, {
-        headers: { "user-agent": "nif-nome/3.0", accept: "text/plain" }
-      });
-      if (!response.ok) continue;
-      const text = await response.text();
-      const match = text.match(/Designa(?:ção|cao)\s+comercial\s*:\s*([^\n\r|]{3,100})/i);
-      const name = validName(match?.[1] || null, legalName);
-      if (name) {
-        return { source: "empresite", legalName, publicNames: [name], address: null, sourceUrl: url };
-      }
-    } catch {}
+    const publicName = extractNameFromText(content, legalName);
+    if (publicName) {
+      return {
+        source: "empresite",
+        legalName,
+        publicNames: [publicName],
+        address: null,
+        sourceUrl: url
+      };
+    }
   }
 
   return null;
