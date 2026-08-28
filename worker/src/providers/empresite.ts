@@ -46,137 +46,92 @@ function validName(value: string | null, legalName: string | null): string | nul
   return v;
 }
 
-function extractCommercialName(text: string, legalName: string): string | null {
-  const normalized = keyOf(text);
-  const needle = keyOf(legalName);
-  const index = normalized.indexOf(needle);
-  if (index < 0) return null;
-  const card = normalized.slice(index, index + 1800);
-  const end = card.search(/\s+matches in the search\s+for\s*:/i);
-  const bounded = end >= 0 ? card.slice(0, end) : card;
-  const match = bounded.match(/designacao\s+comercial\s*:\s*(.+?)(?=\s+ver\s+empresa|\s+ver\s+no\s+mapa|$)/i);
-  return validName(match?.[1] || null, legalName);
-}
-
-function extractSearchUrls(html: string): string[] {
-  const urls = new Set<string>();
-  const source = decodeHtml(html);
-  for (const match of source.matchAll(/href=["']([^"']+)["']/gi)) {
-    try {
-      const u = new URL(match[1], "https://html.duckduckgo.com/html/");
-      const redirected = u.searchParams.get("uddg");
-      const candidate = redirected ? decodeURIComponent(redirected) : u.toString();
-      if (/empresite\.jornaldenegocios\.pt/i.test(candidate)) urls.add(candidate);
-    } catch {}
+function extractFromHtml(html: string, legalName: string): string | null {
+  const rowRegex = /<tr\b[^>]*>[\s\S]*?<\/tr>/gi;
+  for (const match of html.matchAll(rowRegex)) {
+    const row = match[0];
+    const rowText = clean(row);
+    if (!/Designa(?:ção|cao)\s+comercial/i.test(rowText)) continue;
+    
+    const cells: string[] = [];
+    for (const cell of row.matchAll(/<(?:th|td)\b[^>]*>([\s\S]*?)<\/(?:th|td)>/gi)) {
+      cells.push(clean(cell[1]));
+    }
+    const labelIndex = cells.findIndex((cell) => /Designa(?:ção|cao)\s+comercial/i.test(cell));
+    if (labelIndex >= 0) {
+      for (let i = labelIndex + 1; i < cells.length; i++) {
+        const candidate = validName(cells[i], legalName);
+        if (candidate) return candidate;
+      }
+    }
   }
-  return [...urls];
+  
+  // Direct Regex fallback on cleaned text
+  const text = clean(html);
+  const match = text.match(/Designa(?:ção|cao)\s+comercial\s*:\s*([^|.<>]{3,100})/i);
+  return validName(match?.[1] || null, legalName);
 }
 
 function directUrls(legalName: string | null): string[] {
   if (!legalName) return [];
+  const full = slug(legalName);
   const base = legalName.replace(/,?\s+(unipessoal|sociedade|lda|sa|s\.a\.).*$/i, "").trim();
   const s = slug(base);
-  const urls = [`https://empresite.jornaldenegocios.pt/${s}.html`];
-  const full = slug(legalName);
-  if (full !== s) urls.push(`https://empresite.jornaldenegocios.pt/${full}.html`);
-  return urls;
+  
+  const urls = [
+    `https://empresite.jornaldenegocios.pt/${full}.html`,
+    `https://empresite.jornaldenegocios.pt/${s}.html`
+  ];
+  return [...new Set(urls)];
 }
 
-function categoryUrls(legalName: string | null): string[] {
-  if (!legalName) return [];
-  const n = keyOf(legalName);
-  const out: string[] = [];
-  if (/pizzaria|pizza/.test(n)) out.push("https://empresite.jornaldenegocios.pt/Actividade/PIZZARIA/");
-  if (/restaurante|restauracao|restaura/.test(n)) out.push("https://empresite.jornaldenegocios.pt/Actividade/RESTAURANTE/");
-  if (/farmacia/.test(n)) out.push("https://empresite.jornaldenegocios.pt/Actividade/FARMACIA/");
-  if (/cafe|cafes/.test(n)) out.push("https://empresite.jornaldenegocios.pt/Actividade/CAFE/");
-  return out;
-}
-
-async function fetchPage(url: string): Promise<{ text: string } | null> {
-  const response = await fetch(url, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/2.5; public business lookup)", accept: "text/html,application/xhtml+xml" } });
+async function fetchPage(url: string): Promise<{ html: string; text: string } | null> {
+  const response = await fetch(url, { 
+    headers: { 
+      "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", 
+      accept: "text/html,application/xhtml+xml" 
+    } 
+  });
   if (!response.ok) return null;
   const bytes = await response.arrayBuffer();
   const type = response.headers.get("content-type") || "";
   const charset = /charset=([^;]+)/i.exec(type)?.[1]?.trim().toLowerCase();
   const html = new TextDecoder(charset === "utf-8" ? "utf-8" : "windows-1252").decode(bytes);
-  return { text: clean(html) };
-}
-
-async function fetchText(url: string): Promise<string | null> {
-  try { return (await fetchPage(url))?.text || null; } catch { return null; }
-}
-
-async function findOnUrl(url: string, legalName: string): Promise<EmpresiteResult | null> {
-  const text = await fetchText(url);
-  if (!text || !keyOf(text).includes(keyOf(legalName))) return null;
-  const name = extractCommercialName(text, legalName);
-  return name ? { source: "empresite", legalName, publicNames: [name], address: null, sourceUrl: url } : null;
-}
-
-async function findViaJina(url: string, legalName: string): Promise<EmpresiteResult | null> {
-  try {
-    const response = await fetch(`https://r.jina.ai/${url}`, { headers: { "user-agent": "nif-nome/2.5", accept: "text/plain" } });
-    if (!response.ok) return null;
-    const text = await response.text();
-    if (!keyOf(text).includes(keyOf(legalName))) return null;
-    const name = extractCommercialName(text, legalName);
-    return name ? { source: "empresite", legalName, publicNames: [name], address: null, sourceUrl: url } : null;
-  } catch { return null; }
-}
-
-function searchTerms(nif: string, legalName: string | null): string[] {
-  const out = new Set<string>();
-  out.add(`"${nif}" "Designação comercial" Empresite`);
-  if (legalName) {
-    out.add(`"${legalName}" "Designação comercial" Empresite`);
-    out.add(`"${legalName}" Empresite`);
-  }
-  return [...out];
+  return { html, text: clean(html) };
 }
 
 export async function findByNif(nif: string, legalName: string | null): Promise<EmpresiteResult | null> {
   if (!legalName) return null;
   const visited = new Set<string>();
 
-  // 1. Exact company URL. Empresite uses a stable slug based on the company
-  // name; this avoids the old page-wide category guessing entirely.
+  // 1. Tentar os URLs diretos baseados no nome legal (Slug)
   for (const url of directUrls(legalName)) {
     if (visited.has(url)) continue;
     visited.add(url);
-    const found = await findOnUrl(url, legalName);
-    if (found) return found;
-    const viaJina = await findViaJina(url, legalName);
-    if (viaJina) return viaJina;
-  }
-
-  // 2. Category pages where the legal name itself strongly indicates the
-  // activity. The extraction is bounded to the exact company card.
-  for (const url of categoryUrls(legalName)) {
-    if (visited.has(url)) continue;
-    visited.add(url);
-    const found = await findOnUrl(url, legalName);
-    if (found) return found;
-    const viaJina = await findViaJina(url, legalName);
-    if (viaJina) return viaJina;
-  }
-
-  // 3. Search engine fallback. Only follow Empresite URLs and only accept a
-  // commercial name found in the same exact legal-name block.
-  for (const term of searchTerms(nif, legalName)) {
     try {
-      const response = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(term)}`, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/2.5)", accept: "text/html" } });
-      if (!response.ok) continue;
-      const urls = extractSearchUrls(await response.text()).slice(0, 15);
-      for (const url of urls) {
-        if (visited.has(url)) continue;
-        visited.add(url);
-        const found = await findOnUrl(url, legalName);
-        if (found) return found;
-        const viaJina = await findViaJina(url, legalName);
-        if (viaJina) return viaJina;
+      const page = await fetchPage(url);
+      if (!page) continue;
+      const name = extractFromHtml(page.html, legalName);
+      if (name) {
+        return { source: "empresite", legalName, publicNames: [name], address: null, sourceUrl: url };
       }
     } catch {}
   }
+
+  // 2. Fallback via Jina Reader (caso haja bloqueio Cloudflare no fetch direto)
+  for (const url of directUrls(legalName)) {
+    try {
+      const jinaUrl = `https://r.jina.ai/${url}`;
+      const response = await fetch(jinaUrl, { headers: { "user-agent": "nif-nome/2.5", accept: "text/plain" } });
+      if (!response.ok) continue;
+      const text = await response.text();
+      const match = text.match(/Designa(?:ção|cao)\s+comercial\s*:\s*([^\n\r|]{3,100})/i);
+      const name = validName(match?.[1] || null, legalName);
+      if (name) {
+        return { source: "empresite", legalName, publicNames: [name], address: null, sourceUrl: url };
+      }
+    } catch {}
+  }
+
   return null;
 }
