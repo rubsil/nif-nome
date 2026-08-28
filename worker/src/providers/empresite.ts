@@ -47,41 +47,42 @@ function validName(value: string | null, legalName: string | null): string | nul
 }
 
 function extractFromHtml(html: string, legalName: string): string | null {
-  const rowRegex = /<tr\b[^>]*>[\s\S]*?<\/tr>/gi;
-  for (const match of html.matchAll(rowRegex)) {
-    const row = match[0];
-    const rowText = clean(row);
-    if (!/Designa(?:ção|cao)\s+comercial/i.test(rowText)) continue;
-    
-    const cells: string[] = [];
-    for (const cell of row.matchAll(/<(?:th|td)\b[^>]*>([\s\S]*?)<\/(?:th|td)>/gi)) {
-      cells.push(clean(cell[1]));
-    }
-    const labelIndex = cells.findIndex((cell) => /Designa(?:ção|cao)\s+comercial/i.test(cell));
-    if (labelIndex >= 0) {
-      for (let i = labelIndex + 1; i < cells.length; i++) {
-        const candidate = validName(cells[i], legalName);
-        if (candidate) return candidate;
-      }
-    }
-  }
-  
-  // Direct Regex fallback on cleaned text
   const text = clean(html);
-  const match = text.match(/Designa(?:ção|cao)\s+comercial\s*:\s*([^|.<>]{3,100})/i);
-  return validName(match?.[1] || null, legalName);
+  
+  // 1. Tentar procurar por tabelas/campos de "Designação comercial" ou "Nome comercial"
+  const match = text.match(/(?:Designa(?:ção|cao)\s+comercial|Nome\s+comercial)\s*:\s*([^|.<>]{3,100})/i);
+  if (match?.[1]) {
+    const candidate = validName(match[1], legalName);
+    if (candidate) return candidate;
+  }
+
+  // 2. Tentar apanhar o nome no título do perfil se for diferente da razão social
+  const titleMatch = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+  if (titleMatch?.[1]) {
+    const candidate = validName(clean(titleMatch[1]), legalName);
+    if (candidate) return candidate;
+  }
+
+  return null;
 }
 
-function directUrls(legalName: string | null): string[] {
-  if (!legalName) return [];
+function generatePossibleSlugs(legalName: string): string[] {
   const full = slug(legalName);
-  const base = legalName.replace(/,?\s+(unipessoal|sociedade|lda|sa|s\.a\.).*$/i, "").trim();
-  const s = slug(base);
   
+  // Remover sufixos jurídicos (Unipessoal, Lda, SA, etc.)
+  const withoutSuffix = legalName.replace(/,?\s+(unipessoal|sociedade|lda|sa|s\.a\.|unipessoal\s+lda).*$/i, "").trim();
+  const sWithoutSuffix = slug(withoutSuffix);
+
+  // Remover prefixos comuns de atividade (Pizzaria, Restaurante, Cafe, Hotel)
+  const withoutPrefix = withoutSuffix.replace(/^(pizzaria|restaurante|caf[eé]|hotel|bar|loja|tasca)\s+/i, "").trim();
+  const sWithoutPrefix = slug(withoutPrefix);
+
   const urls = [
     `https://empresite.jornaldenegocios.pt/${full}.html`,
-    `https://empresite.jornaldenegocios.pt/${s}.html`
+    `https://empresite.jornaldenegocios.pt/${sWithoutSuffix}.html`,
+    `https://empresite.jornaldenegocios.pt/${sWithoutPrefix}.html`
   ];
+
   return [...new Set(urls)];
 }
 
@@ -104,8 +105,8 @@ export async function findByNif(nif: string, legalName: string | null): Promise<
   if (!legalName) return null;
   const visited = new Set<string>();
 
-  // 1. Tentar os URLs diretos baseados no nome legal (Slug)
-  for (const url of directUrls(legalName)) {
+  // 1. Tentar os URLs gerados a partir do nome
+  for (const url of generatePossibleSlugs(legalName)) {
     if (visited.has(url)) continue;
     visited.add(url);
     try {
@@ -118,14 +119,14 @@ export async function findByNif(nif: string, legalName: string | null): Promise<
     } catch {}
   }
 
-  // 2. Fallback via Jina Reader (caso haja bloqueio Cloudflare no fetch direto)
-  for (const url of directUrls(legalName)) {
+  // 2. Fallback via Jina Reader para contornar eventuais bloqueios
+  for (const url of generatePossibleSlugs(legalName)) {
     try {
       const jinaUrl = `https://r.jina.ai/${url}`;
-      const response = await fetch(jinaUrl, { headers: { "user-agent": "nif-nome/2.5", accept: "text/plain" } });
+      const response = await fetch(jinaUrl, { headers: { "user-agent": "nif-nome/2.6", accept: "text/plain" } });
       if (!response.ok) continue;
       const text = await response.text();
-      const match = text.match(/Designa(?:ção|cao)\s+comercial\s*:\s*([^\n\r|]{3,100})/i);
+      const match = text.match(/(?:Designa(?:ção|cao)\s+comercial|Nome\s+comercial)\s*:\s*([^\n\r|]{3,100})/i);
       const name = validName(match?.[1] || null, legalName);
       if (name) {
         return { source: "empresite", legalName, publicNames: [name], address: null, sourceUrl: url };
