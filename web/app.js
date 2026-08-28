@@ -1,3 +1,4 @@
+// Deployment marker: keep GitHub Pages synchronized with the Worker frontend.
 const API_BASE = window.NIF_NOME_API || 'https://nif-nome.ruben-silva-92.workers.dev';
 let STATIC_COMPANIES = null;
 const form = document.querySelector('#searchForm');
