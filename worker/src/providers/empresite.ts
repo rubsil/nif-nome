@@ -34,29 +34,36 @@ function extractLabeled(text: string, label: string): string | null {
   return cleanValue(text.match(re)?.[1] || null);
 }
 
-// Category pages contain many company cards. Only inspect the card that starts
-// at the requested legal name. The commercial designation must be explicitly
-// labelled inside that same card; nearby words are never evidence.
 function extractCategoryCard(text: string, legalName: string): string | null {
   const normalText = keyOf(text);
   const needle = keyOf(legalName);
-  const index = normalText.indexOf(needle);
-  if (index < 0) return null;
-  const card = text.slice(index, Math.min(text.length, index + 1800));
-  const match = card.match(/Designa(?:ção|cao)\s+comercial\s*:\s*([^.!?\n]{3,140}?)(?=\s+(?:Ver empresa|Ver no Mapa|Matches in the search|Activity categories|NIF|Morada|Atividade|$))/i);
-  return validName(match?.[1] || null, legalName);
+  let index = normalText.indexOf(needle);
+  if (index < 0) {
+    const stem = keyOf(legalName.replace(/,?\s+(unipessoal|sociedade|lda|sa|s\.a\.).*$/i, "").trim());
+    if (stem.length < 5) return null;
+    index = normalText.indexOf(stem);
+    if (index < 0) return null;
+  }
+  const card = text.slice(index, Math.min(text.length, index + 5000));
+  const patterns = [
+    /Designa(?:ção|cao)\s+comercial\s*:\s*([^.!?]{3,160}?)(?=\s+(?:Ver empresa|Ver no Mapa|Matches in the search|Activity categories|Pesquisar|Resultados|Pág\.?|$))/i,
+    /Designa(?:ção|cao)\s+comercial\s*:\s*([^.!?]{3,160})/i
+  ];
+  for (const pattern of patterns) {
+    const candidate = validName(card.match(pattern)?.[1] || null, legalName);
+    if (candidate) return candidate;
+  }
+  return null;
 }
 
 function extractFromPage(text: string, nif: string, legalName: string | null, sourceUrl: string): EmpresiteResult | null {
   const hasNif = text.includes(nif);
   const hasLegalName = !!legalName && keyOf(text).includes(keyOf(legalName));
   if (!hasNif && !hasLegalName) return null;
-
   if (legalName) {
     const categoryName = extractCategoryCard(text, legalName);
     if (categoryName) return { source: "empresite", legalName, publicNames: [categoryName], address: null, sourceUrl };
   }
-
   const publicName = validName(extractLabeled(text, "Designação\\s+comercial"), legalName);
   const address = extractLabeled(text, "Morada");
   const pageLegal = extractLabeled(text, "Razão\\s+Social");
@@ -68,9 +75,8 @@ function extractSearchUrls(html: string): string[] {
   const urls = new Set<string>();
   const source = decodeHtml(html);
   for (const match of source.matchAll(/href=["']([^"']+)["']/gi)) {
-    const href = match[1];
     try {
-      const absolute = new URL(href, "https://html.duckduckgo.com/html/");
+      const absolute = new URL(match[1], "https://html.duckduckgo.com/html/");
       const redirected = absolute.searchParams.get("uddg");
       const candidate = redirected ? decodeURIComponent(redirected) : absolute.toString();
       if (/empresite\.jornaldenegocios\.pt/i.test(candidate)) urls.add(candidate);
@@ -85,8 +91,6 @@ function extractSearchUrls(html: string): string[] {
 
 function buildSearchTerms(nif: string, legalName: string | null): string[] {
   const terms = new Set<string>();
-  // Search is only used to discover candidate Empresite pages. The search
-  // result/snippet itself is never accepted as commercial-name evidence.
   terms.add(`"${nif}" site:empresite.jornaldenegocios.pt`);
   terms.add(`"${nif}" "Designação comercial" site:empresite.jornaldenegocios.pt`);
   if (legalName) {
@@ -111,7 +115,7 @@ function buildDirectCategoryUrls(legalName: string | null): string[] {
 }
 
 async function fetchPage(url: string): Promise<string | null> {
-  const response = await fetch(url, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/1.9; public business lookup)", accept: "text/html,application/xhtml+xml" } });
+  const response = await fetch(url, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/2.0; public business lookup)", accept: "text/html,application/xhtml+xml" } });
   if (!response.ok) return null;
   const bytes = await response.arrayBuffer();
   const contentType = response.headers.get("content-type") || "";
@@ -132,16 +136,13 @@ export async function findByNif(nif: string, legalName: string | null): Promise<
       if (found?.publicNames.length) return found;
     } catch {}
   }
-
   for (const term of buildSearchTerms(nif, legalName)) {
     const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(term)}`;
     try {
-      const searchResponse = await fetch(searchUrl, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/1.9; public business lookup)", accept: "text/html" } });
+      const searchResponse = await fetch(searchUrl, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/2.0; public business lookup)", accept: "text/html" } });
       if (!searchResponse.ok) continue;
       const html = await searchResponse.text();
-      // Do not parse DuckDuckGo snippets for names. They are only a URL
-      // discovery mechanism and may contain unrelated navigation text.
-      for (const url of extractSearchUrls(html).slice(0, 20)) {
+      for (const url of extractSearchUrls(html).slice(0, 30)) {
         if (visited.has(url)) continue;
         visited.add(url);
         try {
