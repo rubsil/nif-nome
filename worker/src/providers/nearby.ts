@@ -29,14 +29,29 @@ function locality(value: string): string {
   if (!match) return "";
   return match[1].replace(/\b(?:HRT|MAD)\b/gi, "").replace(/\s+/g, " ").trim();
 }
+function splitStreetNumber(value: string): { street: string; number: string } {
+  const match = value.trim().match(/^(.*?)[,\s]+(\d+[A-Za-z]?)$/);
+  if (!match) return { street: value.trim(), number: "" };
+  return { street: match[1].trim(), number: match[2] };
+}
 function resultMatchesTarget(row: any, pc: string, loc: string): boolean {
   const display = normalise(String(row?.display_name || ""));
   const addr = row?.address || {};
   const resultPc = String(addr.postcode || "");
-  const resultPlace = normalise(String(addr.city || addr.town || addr.village || addr.municipality || ""));
+  const resultPlace = normalise(String(addr.city || addr.town || addr.village || addr.municipality || addr.county || ""));
+  const wantedLoc = normalise(loc);
+
+  // A postcode mismatch is decisive. This prevents a street with the same
+  // name on another island from being accepted.
   if (pc && resultPc && resultPc !== pc) return false;
-  if (pc && !resultPc && /funchal|madeira|porto santo/i.test(display) && !/madeira/i.test(loc)) return false;
-  if (loc && resultPlace && resultPlace !== normalise(loc) && !display.includes(normalise(loc))) return false;
+
+  // If Nominatim did not return a postcode, reject known wrong-island hits.
+  if (pc && !resultPc && /funchal|madeira|porto santo|ponta delgada/i.test(display) && !/madeira|sao miguel|ponta delgada/i.test(wantedLoc)) return false;
+
+  // Nominatim can use a freguesia (e.g. Angústias) in one field and Horta in
+  // another. Accept the result when the requested locality occurs anywhere in
+  // the full display name, while still rejecting a clearly different city.
+  if (wantedLoc && !resultPlace.includes(wantedLoc) && !display.includes(wantedLoc)) return false;
   return true;
 }
 async function geocode(query: string): Promise<any | null> {
@@ -44,12 +59,28 @@ async function geocode(query: string): Promise<any | null> {
   url.searchParams.set("q", query);
   url.searchParams.set("format", "jsonv2");
   url.searchParams.set("addressdetails", "1");
-  url.searchParams.set("limit", "1");
+  url.searchParams.set("limit", "3");
   url.searchParams.set("countrycodes", "pt");
-  const response = await fetch(url.toString(), { headers: { "user-agent": "nif-nome/1.8 (public business lookup; contact via project)", accept: "application/json" } });
+  const response = await fetch(url.toString(), { headers: { "user-agent": "nif-nome/2.5 (public business lookup; contact via project)", accept: "application/json" } });
   if (!response.ok) return null;
   const rows = await response.json<any[]>();
   return rows[0] || null;
+}
+async function geocodeStructured(base: string, pc: string, loc: string): Promise<any | null> {
+  const { street, number } = splitStreetNumber(base);
+  const url = new URL("https://nominatim.openstreetmap.org/search");
+  if (street) url.searchParams.set("street", number ? `${street} ${number}` : street);
+  if (pc) url.searchParams.set("postalcode", pc);
+  if (loc) url.searchParams.set("city", loc);
+  url.searchParams.set("country", "Portugal");
+  url.searchParams.set("format", "jsonv2");
+  url.searchParams.set("addressdetails", "1");
+  url.searchParams.set("limit", "3");
+  url.searchParams.set("countrycodes", "pt");
+  const response = await fetch(url.toString(), { headers: { "user-agent": "nif-nome/2.5 (public business lookup; contact via project)", accept: "application/json" } });
+  if (!response.ok) return null;
+  const rows = await response.json<any[]>();
+  return rows.find(row => resultMatchesTarget(row, pc, loc)) || null;
 }
 
 export async function findNearby(address: string): Promise<{ places: NearbyPlace[]; geocoded: { display_name: string; lat: number; lon: number } | null; source: string }> {
@@ -60,8 +91,16 @@ export async function findNearby(address: string): Promise<{ places: NearbyPlace
   const upper = raw.toUpperCase();
   const islandHint = /HORTA|CASTELO BRANCO HRT|FAIAL|9900-/.test(upper) ? "Horta, Faial" : "";
 
-  // Always try the complete street + number + postcode first. Do not accept a
-  // geocoder hit from another locality/island just because it matched the street name.
+  let geo: any | null = null;
+
+  // First use Nominatim's structured address fields. This is much less likely
+  // to interpret a generic street name as an address on another island.
+  if (base && pc) {
+    try { geo = await geocodeStructured(base, pc, loc || "Horta"); } catch {}
+  }
+
+  // Then use complete free-text queries as fallbacks. Every candidate is still
+  // validated against the requested postcode/locality before being accepted.
   const candidates = [
     base && pc && loc ? `${base}, ${pc}, ${loc}, Portugal` : "",
     base && pc && islandHint ? `${base}, ${pc}, ${islandHint}, Portugal` : "",
@@ -69,31 +108,38 @@ export async function findNearby(address: string): Promise<{ places: NearbyPlace
     base && loc ? `${base}, ${loc}, Portugal` : "",
     base && islandHint ? `${base}, ${islandHint}, Portugal` : "",
     pc && loc ? `${pc}, ${loc}, Portugal` : "",
-    base,
-    pc && islandHint ? `${pc}, ${islandHint}, Portugal` : ""
+    pc && islandHint ? `${pc}, ${islandHint}, Portugal` : "",
+    base
   ].map(v => v.trim()).filter((v, i, arr) => v.length >= 4 && arr.indexOf(v) === i);
 
-  let geo: any | null = null;
-  for (const candidate of candidates) {
-    try {
-      const candidateGeo = await geocode(candidate);
-      if (candidateGeo && resultMatchesTarget(candidateGeo, pc, loc)) { geo = candidateGeo; break; }
-    } catch {}
+  if (!geo) {
+    for (const candidate of candidates) {
+      try {
+        const candidateGeo = await geocode(candidate);
+        if (candidateGeo && resultMatchesTarget(candidateGeo, pc, loc)) { geo = candidateGeo; break; }
+      } catch {}
+    }
   }
+
   if (!geo) return { places: [], geocoded: null, source: "OpenStreetMap" };
 
   const lat = Number(geo.lat), lon = Number(geo.lon);
   const radius = 300;
-  const query = `[out:json][timeout:20];(nwr(around:${radius},${lat},${lon})["name"]["amenity"];nwr(around:${radius},${lat},${lon})["name"]["shop"];nwr(around:${radius},${lat},${lon})["name"]["tourism"];nwr(around:${radius},${lat},${lon})["name"]["craft"];nwr(around:${radius},${lat},${lon})["name"]["office"];nwr(around:${radius},${lat},${lon})["name"]["leisure"];nwr(around:${radius},${lat},${lon})["name"]["healthcare"];);out center tags;`;
-  const endpoints = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
+  const query = `[out:json][timeout:30];(nwr(around:${radius},${lat},${lon})["name"]["amenity"];nwr(around:${radius},${lat},${lon})["name"]["shop"];nwr(around:${radius},${lat},${lon})["name"]["tourism"];nwr(around:${radius},${lat},${lon})["name"]["craft"];nwr(around:${radius},${lat},${lon})["name"]["office"];nwr(around:${radius},${lat},${lon})["name"]["leisure"];nwr(around:${radius},${lat},${lon})["name"]["healthcare"];);out center tags;`;
+  const endpoints = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter"
+  ];
   let payload: any = null;
   for (const endpoint of endpoints) {
     try {
-      const overpass = await fetch(endpoint, { method: "POST", headers: { "content-type": "text/plain; charset=utf-8", "user-agent": "nif-nome/1.8 (public business lookup)" }, body: query });
+      const overpass = await fetch(endpoint, { method: "POST", headers: { "content-type": "text/plain; charset=utf-8", "user-agent": "nif-nome/2.5 (public business lookup)" }, body: query });
       if (overpass.ok) { payload = await overpass.json<any>(); break; }
     } catch {}
   }
   if (!payload) throw new Error("Não foi possível consultar os estabelecimentos no OpenStreetMap.");
+
   const places: NearbyPlace[] = [];
   for (const element of payload.elements || []) {
     const tags = element.tags || {};
