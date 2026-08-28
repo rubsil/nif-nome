@@ -56,43 +56,32 @@ function extractLabeled(text: string, label: string): string | null {
  * Empresite category pages contain many companies in one page. The important
  * rule is that the legal name and the commercial designation must belong to
  * the SAME result card. Never scan the whole page for "Designação comercial".
- *
- * Example from the Pizzaria category:
- *   Pizzaria Isapipo, Unipessoal, Lda
- *   PC INFANTE DOM HENRIQUE 4 R/C, 9900-016
- *   ...
- *   Designação comercial: PIZZARIA PAPA PIZZA
- *   Ver empresaVer no Mapa
  */
 function extractCategoryCard(text: string, legalName: string): string | null {
+  // Work entirely on the normalized text so index positions cannot drift when
+  // accents/newlines/multiple spaces are removed.
   const normalText = keyOf(text);
   const needle = keyOf(legalName);
   const index = normalText.indexOf(needle);
   if (index < 0) return null;
 
   // A result card is short; stop at the next "Matches in the search" block.
-  const card = text.slice(index, Math.min(text.length, index + 2200));
-  const end = card.search(/\s+Matches in the search\s+for\s*:/i);
+  const card = normalText.slice(index, Math.min(normalText.length, index + 2200));
+  const end = card.search(/\s+matches in the search\s+for\s*:/i);
   const bounded = end >= 0 ? card.slice(0, end) : card;
-
-  const match = bounded.match(/Designa(?:ção|cao)\s+comercial\s*:\s*(.+?)(?=\s+Ver\s+empresa|\s+Ver\s+no\s+Mapa|$)/i);
+  const match = bounded.match(/designa(?:cao|ção)\s+comercial\s*:\s*(.+?)(?=\s+ver\s+empresa|\s+ver\s+no\s+mapa|$)/i);
   return validName(match?.[1] || null, legalName);
 }
 
 function extractCommercialNameFromHtml(html: string, legalName: string): string | null {
-  // Prefer the HTML table/card structure when present. This keeps the
-  // extraction tied to the exact company block rather than page-wide text.
   const rowRegex = /<tr\b[^>]*>[\s\S]*?<\/tr>/gi;
   for (const match of html.matchAll(rowRegex)) {
     const row = match[0];
     const rowText = clean(row);
     if (!/Designa(?:ção|cao)\s+comercial/i.test(rowText)) continue;
     if (!keyOf(rowText).includes(keyOf(legalName))) continue;
-
     const cells: string[] = [];
-    for (const cell of row.matchAll(/<(?:th|td)\b[^>]*>([\s\S]*?)<\/(?:th|td)>/gi)) {
-      cells.push(clean(cell[1]));
-    }
+    for (const cell of row.matchAll(/<(?:th|td)\b[^>]*>([\s\S]*?)<\/(?:th|td)>/gi)) cells.push(clean(cell[1]));
     const labelIndex = cells.findIndex(cell => /Designa(?:ção|cao)\s+comercial/i.test(cell));
     if (labelIndex >= 0) {
       for (let i = labelIndex + 1; i < cells.length; i++) {
@@ -110,7 +99,6 @@ function extractFromPage(html: string, text: string, nif: string, legalName: str
   if (!hasNif && !hasLegalName) return null;
   if (!legalName) return null;
 
-  // First try the exact HTML row/card, then the cleaned category-card text.
   const htmlName = extractCommercialNameFromHtml(html, legalName);
   if (htmlName) return { source: "empresite", legalName, publicNames: [htmlName], address: null, sourceUrl };
 
@@ -180,10 +168,6 @@ async function fetchPage(url: string): Promise<{ html: string; text: string } | 
 
 export async function findByNif(nif: string, legalName: string | null): Promise<EmpresiteResult | null> {
   const visited = new Set<string>();
-
-  // Deterministic category pages come first. For PIZZARIA ISAPIPO this is the
-  // page where Empresite explicitly lists "PIZZARIA PAPA PIZZA" beside the
-  // exact legal company name and postcode.
   for (const url of buildDirectCategoryUrls(legalName)) {
     if (visited.has(url)) continue;
     visited.add(url);
