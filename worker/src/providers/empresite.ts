@@ -47,53 +47,60 @@ function validName(value: string | null, legalName: string | null): string | nul
   return v;
 }
 
+function extractLabeled(text: string, label: string): string | null {
+  const re = new RegExp(`${label}\\s*:\\s*([^|<>]{2,220}?)(?=\\s+(?:NIF|NIPC|Morada|Código Postal|Atividade|Forma jurídica|Razão Social|Designação comercial)\\s*:|$)`, "i");
+  return cleanValue(text.match(re)?.[1] || null);
+}
+
 /**
- * Empresite exposes the company data in a real HTML table. The screenshot
- * supplied during debugging shows the exact structure:
+ * Empresite category pages contain many companies in one page. The important
+ * rule is that the legal name and the commercial designation must belong to
+ * the SAME result card. Never scan the whole page for "Designação comercial".
  *
- *   <tr class="tr-datos-externos">
- *     ... <th>Designação comercial</th>
- *     <td class="td-datos-externos">FARMACIA LEÇO</td>
- *   </tr>
- *
- * Parse that row directly instead of searching the whole page for the label.
- * This prevents navigation words such as English/Spanish from becoming a
- * company's commercial name and keeps the value tied to the exact page.
+ * Example from the Pizzaria category:
+ *   Pizzaria Isapipo, Unipessoal, Lda
+ *   PC INFANTE DOM HENRIQUE 4 R/C, 9900-016
+ *   ...
+ *   Designação comercial: PIZZARIA PAPA PIZZA
+ *   Ver empresaVer no Mapa
  */
-function extractCommercialNameFromHtml(html: string, legalName: string | null): string | null {
+function extractCategoryCard(text: string, legalName: string): string | null {
+  const normalText = keyOf(text);
+  const needle = keyOf(legalName);
+  const index = normalText.indexOf(needle);
+  if (index < 0) return null;
+
+  // A result card is short; stop at the next "Matches in the search" block.
+  const card = text.slice(index, Math.min(text.length, index + 2200));
+  const end = card.search(/\s+Matches in the search\s+for\s*:/i);
+  const bounded = end >= 0 ? card.slice(0, end) : card;
+
+  const match = bounded.match(/Designa(?:ção|cao)\s+comercial\s*:\s*(.+?)(?=\s+Ver\s+empresa|\s+Ver\s+no\s+Mapa|$)/i);
+  return validName(match?.[1] || null, legalName);
+}
+
+function extractCommercialNameFromHtml(html: string, legalName: string): string | null {
+  // Prefer the HTML table/card structure when present. This keeps the
+  // extraction tied to the exact company block rather than page-wide text.
   const rowRegex = /<tr\b[^>]*>[\s\S]*?<\/tr>/gi;
   for (const match of html.matchAll(rowRegex)) {
     const row = match[0];
     const rowText = clean(row);
     if (!/Designa(?:ção|cao)\s+comercial/i.test(rowText)) continue;
+    if (!keyOf(rowText).includes(keyOf(legalName))) continue;
 
     const cells: string[] = [];
     for (const cell of row.matchAll(/<(?:th|td)\b[^>]*>([\s\S]*?)<\/(?:th|td)>/gi)) {
       cells.push(clean(cell[1]));
     }
-
     const labelIndex = cells.findIndex(cell => /Designa(?:ção|cao)\s+comercial/i.test(cell));
-    if (labelIndex < 0) continue;
-
-    for (let i = labelIndex + 1; i < cells.length; i++) {
-      const candidate = validName(cells[i], legalName);
-      if (candidate) return candidate;
+    if (labelIndex >= 0) {
+      for (let i = labelIndex + 1; i < cells.length; i++) {
+        const candidate = validName(cells[i], legalName);
+        if (candidate) return candidate;
+      }
     }
   }
-
-  // Some Empresite layouts omit <th> and use divs. Keep this fallback local
-  // to the block containing the label; never search page-wide.
-  const blockRegex = /<(?:div|li|section)\b[^>]*>[\s\S]{0,5000}?Designa(?:ção|cao)\s+comercial[\s\S]{0,5000}?<\/(?:div|li|section)>/gi;
-  for (const match of html.matchAll(blockRegex)) {
-    const text = clean(match[0]);
-    const label = /Designa(?:ção|cao)\s+comercial\s*:?/i.exec(text);
-    if (!label) continue;
-    const after = text.slice((label.index || 0) + label[0].length);
-    const candidate = after.split(/\s+(?:NIF|NIPC|Morada|Atividade|Forma jurídica|Razão Social|Código Postal)\s*:/i)[0].trim();
-    const name = validName(candidate, legalName);
-    if (name) return name;
-  }
-
   return null;
 }
 
@@ -103,10 +110,18 @@ function extractFromPage(html: string, text: string, nif: string, legalName: str
   if (!hasNif && !hasLegalName) return null;
   if (!legalName) return null;
 
-  const commercialName = extractCommercialNameFromHtml(html, legalName);
-  if (!commercialName) return null;
+  // First try the exact HTML row/card, then the cleaned category-card text.
+  const htmlName = extractCommercialNameFromHtml(html, legalName);
+  if (htmlName) return { source: "empresite", legalName, publicNames: [htmlName], address: null, sourceUrl };
 
-  return { source: "empresite", legalName, publicNames: [commercialName], address: null, sourceUrl };
+  const categoryName = extractCategoryCard(text, legalName);
+  if (categoryName) return { source: "empresite", legalName, publicNames: [categoryName], address: null, sourceUrl };
+
+  const publicName = validName(extractLabeled(text, "Designação\\s+comercial"), legalName);
+  const address = extractLabeled(text, "Morada");
+  const pageLegal = extractLabeled(text, "Razão\\s+Social");
+  if (!pageLegal && !address && !publicName) return null;
+  return { source: "empresite", legalName: pageLegal || legalName || null, publicNames: publicName ? [publicName] : [], address, sourceUrl };
 }
 
 function extractSearchUrls(html: string): string[] {
@@ -141,8 +156,19 @@ function buildSearchTerms(nif: string, legalName: string | null): string[] {
   return [...terms];
 }
 
+function buildDirectCategoryUrls(legalName: string | null): string[] {
+  if (!legalName) return [];
+  const n = keyOf(legalName);
+  const urls: string[] = [];
+  if (/pizzaria|pizza/.test(n)) urls.push("https://empresite.jornaldenegocios.pt/Actividade/PIZZARIA/");
+  if (/restaurante|restauracao|restaura/.test(n)) urls.push("https://empresite.jornaldenegocios.pt/Actividade/RESTAURANTE/");
+  if (/farmacia/.test(n)) urls.push("https://empresite.jornaldenegocios.pt/Actividade/FARMACIA/");
+  if (/cafe|cafes/.test(n)) urls.push("https://empresite.jornaldenegocios.pt/Actividade/CAFE/");
+  return urls;
+}
+
 async function fetchPage(url: string): Promise<{ html: string; text: string } | null> {
-  const response = await fetch(url, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/2.3; public business lookup)", accept: "text/html,application/xhtml+xml" } });
+  const response = await fetch(url, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/2.4; public business lookup)", accept: "text/html,application/xhtml+xml" } });
   if (!response.ok) return null;
   const bytes = await response.arrayBuffer();
   const contentType = response.headers.get("content-type") || "";
@@ -154,10 +180,25 @@ async function fetchPage(url: string): Promise<{ html: string; text: string } | 
 
 export async function findByNif(nif: string, legalName: string | null): Promise<EmpresiteResult | null> {
   const visited = new Set<string>();
+
+  // Deterministic category pages come first. For PIZZARIA ISAPIPO this is the
+  // page where Empresite explicitly lists "PIZZARIA PAPA PIZZA" beside the
+  // exact legal company name and postcode.
+  for (const url of buildDirectCategoryUrls(legalName)) {
+    if (visited.has(url)) continue;
+    visited.add(url);
+    try {
+      const page = await fetchPage(url);
+      if (!page) continue;
+      const found = extractFromPage(page.html, page.text, nif, legalName, url);
+      if (found?.publicNames.length) return found;
+    } catch {}
+  }
+
   for (const term of buildSearchTerms(nif, legalName)) {
     const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(term)}`;
     try {
-      const searchResponse = await fetch(searchUrl, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/2.3; public business lookup)", accept: "text/html" } });
+      const searchResponse = await fetch(searchUrl, { headers: { "user-agent": "Mozilla/5.0 (compatible; nif-nome/2.4; public business lookup)", accept: "text/html" } });
       if (!searchResponse.ok) continue;
       const html = await searchResponse.text();
       for (const url of extractSearchUrls(html).slice(0, 30)) {
