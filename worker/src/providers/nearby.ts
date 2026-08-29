@@ -72,21 +72,28 @@ async function geocodeCandidate(query: string, pc: string, loc: string): Promise
   url.searchParams.set("addressdetails", "1");
   url.searchParams.set("limit", "5");
   url.searchParams.set("countrycodes", "pt");
-  const response = await fetch(url.toString(), {
-    headers: { "user-agent": "nif-nome/2.9 (public business lookup bot)", accept: "application/json" }
-  });
-  if (!response.ok) return null;
-  const rows = await response.json<any[]>();
-  return rows.find(row => geoMatchesInput(row, pc, loc)) || null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(url.toString(), {
+      headers: { "user-agent": "nif-nome/3.0 (public business lookup bot)", accept: "application/json" },
+      signal: controller.signal
+    });
+    if (!response.ok) return null;
+    const rows = await response.json<any[]>();
+    return rows.find(row => geoMatchesInput(row, pc, loc)) || null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function fetchOverpass(endpoint: string, query: string): Promise<any> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
+  const timer = setTimeout(() => controller.abort(), 7000);
   try {
     const response = await fetch(endpoint, {
       method: "POST",
-      headers: { "content-type": "text/plain; charset=utf-8", "user-agent": "nif-nome/2.9" },
+      headers: { "content-type": "text/plain; charset=utf-8", "user-agent": "nif-nome/3.0" },
       body: query,
       signal: controller.signal
     });
@@ -104,12 +111,15 @@ export async function findNearby(address: string): Promise<{ places: NearbyPlace
   const loc = locality(raw);
   let geo: any | null = null;
 
-  // The complete street + number + postcode is the primary lookup. The postcode
-  // is a validation constraint as well, so a result from another city is rejected.
+  // Prefer the complete address with postcode. The postcode is also a hard
+  // validation constraint so a same-named street in another Portuguese city
+  // can never silently win (e.g. Horta vs Funchal).
   const candidates = [
+    addressClean && pc && loc ? `${addressClean}, ${pc}, ${loc}, Portugal` : "",
     addressClean && pc ? `${addressClean}, ${pc}, Portugal` : "",
-    addressClean && loc && pc ? `${addressClean}, ${loc}, ${pc}, Portugal` : "",
-    addressClean && loc ? `${addressClean}, ${loc}, Portugal` : ""
+    addressClean && loc ? `${addressClean}, ${loc}, Portugal` : "",
+    pc && loc ? `${pc}, ${loc}, Portugal` : "",
+    pc ? `${pc}, Portugal` : ""
   ].filter((v, i, arr) => v.length >= 4 && arr.indexOf(v) === i);
 
   for (const candidate of candidates) {
@@ -122,12 +132,10 @@ export async function findNearby(address: string): Promise<{ places: NearbyPlace
   if (!geo) return { places: [], geocoded: null, source: "OpenStreetMap" };
 
   const lat = Number(geo.lat), lon = Number(geo.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return { places: [], geocoded: null, source: "OpenStreetMap" };
   const radius = 300;
   const query = `[out:json][timeout:8];(nwr(around:${radius},${lat},${lon})["name"]["amenity"];nwr(around:${radius},${lat},${lon})["name"]["shop"];nwr(around:${radius},${lat},${lon})["name"]["tourism"];nwr(around:${radius},${lat},${lon})["name"]["craft"];nwr(around:${radius},${lat},${lon})["name"]["office"];nwr(around:${radius},${lat},${lon})["name"]["leisure"];nwr(around:${radius},${lat},${lon})["name"]["healthcare"];);out center tags;`;
 
-  // Overpass instances are public and can be busy. Race several independent
-  // endpoints instead of waiting through them one by one. The first successful
-  // response wins; this keeps the UI responsive while remaining nationwide.
   const endpoints = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
