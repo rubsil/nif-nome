@@ -4,6 +4,7 @@ import { findByNif as findByPublicacoes } from "./providers/publicacoes";
 import { findByNif as findByEInforma } from "./providers/einforma";
 import { findByNif as findByRigorBiz } from "./providers/rigorbiz";
 import { findByNif as findByEmpresite } from "./providers/empresite";
+import { findByNif as findByRacius } from "./providers/racius";
 import { findNearby } from "./providers/nearby";
 
 export interface Env { DB: D1Database; ENVIRONMENT: string; ASSETS: Fetcher; NIFPT_API_KEY?: string; }
@@ -19,10 +20,6 @@ function cleanLegalName(value: unknown): string | null {
   if (typeof value !== "string") return null;
   let v = value.replace(/\s+/g, " ").trim();
   if (!v) return null;
-
-  // Several directories repeat the same legal name twice. Detect the repeat
-  // by words, not by character count, so punctuation/Unicode differences do
-  // not leave duplicated names in the UI or database.
   const words = v.split(" ");
   if (words.length >= 4 && words.length % 2 === 0) {
     const mid = words.length / 2;
@@ -30,7 +27,6 @@ function cleanLegalName(value: unknown): string | null {
     const second = words.slice(mid).join(" ");
     if (normaliseText(first) === normaliseText(second)) v = first;
   }
-
   const parts = v.split(/\s{2,}/);
   if (parts.length === 2 && normaliseText(parts[0]) === normaliseText(parts[1])) v = parts[0];
   return v;
@@ -41,8 +37,6 @@ function cleanPublicName(value: unknown): string | null {
   const v = value.replace(/\s+/g, " ").trim();
   if (v.length < 3 || v.length > 120) return null;
   const n = normaliseText(v);
-  // Reject page chrome and field labels, but do NOT blacklist ordinary words
-  // such as "Home", "English" or "Spanish": they can be legitimate names.
   if (/^s e public/.test(n) || /licenciada|lider no mercado|informacao para negocios|relatorio gratis|relatorio gratuito/.test(n)) return null;
   if (/^(search|login|register|privacy|cookies|nif|nipc|morada|atividade|designacao comercial|denominacao|razao social)$/.test(n)) return null;
   if (v.split(/\s+/).length > 15) return null;
@@ -67,7 +61,17 @@ function mergeEvidence(a: Evidence[], b: Evidence[]): Evidence[] {
 function mergeResult(base: Result | null, incoming: Partial<Result> | null): Result | null {
   if (!incoming) return base;
   if (!base) return incoming as Result;
-  return { ...base, ...incoming, legalName: cleanLegalName(incoming.legalName || base.legalName), publicNames: mergeEvidence(base.publicNames || [], incoming.publicNames || []), publicName: null };
+  const merged: Result = { ...base };
+  for (const key of ["legalName", "location", "address", "website", "activity", "cae", "sourceUrl", "requestDate"] as const) {
+    const value = incoming[key];
+    if (value !== null && value !== undefined && value !== "") (merged as any)[key] = value;
+  }
+  merged.nif = base.nif || incoming.nif || "";
+  merged.source = incoming.source || base.source;
+  merged.legalName = cleanLegalName(merged.legalName);
+  merged.publicNames = mergeEvidence(base.publicNames || [], incoming.publicNames || []);
+  merged.publicName = merged.publicNames[0]?.name || null;
+  return merged;
 }
 
 async function ensureEvidenceSchema(env: Env) {
@@ -75,15 +79,9 @@ async function ensureEvidenceSchema(env: Env) {
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS name_evidence (id INTEGER PRIMARY KEY AUTOINCREMENT, public_name_id INTEGER NOT NULL, source_name TEXT NOT NULL, source_type TEXT, source_url TEXT, confidence REAL NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), FOREIGN KEY(public_name_id) REFERENCES public_names(id) ON DELETE CASCADE, UNIQUE(public_name_id, source_name, source_url))`).run();
 }
 
-async function clearEvidence(env: Env, nif: string) {
-  await ensureEvidenceSchema(env);
-  await env.DB.prepare(`DELETE FROM name_evidence WHERE public_name_id IN (SELECT id FROM public_names WHERE nif=?)`).bind(nif).run();
-  await env.DB.prepare(`DELETE FROM public_names WHERE nif=?`).bind(nif).run();
-}
-
 async function saveCompany(env: Env, r: Result, evidence: Evidence[]) {
   const best = evidence[0]?.name || null;
-  await env.DB.prepare(`INSERT INTO companies (nif, legal_name, public_name, location, confidence) VALUES (?, ?, ?, ?, ?) ON CONFLICT(nif) DO UPDATE SET legal_name=CASE WHEN excluded.legal_name!='' THEN excluded.legal_name ELSE companies.legal_name END, public_name=excluded.public_name, location=COALESCE(excluded.location,companies.location), confidence=excluded.confidence`).bind(r.nif, r.legalName || "", best, r.address || r.location || null, evidence.length ? evidence[0].confidence : 0.65).run();
+  await env.DB.prepare(`INSERT INTO companies (nif, legal_name, public_name, location, confidence) VALUES (?, ?, ?, ?, ?) ON CONFLICT(nif) DO UPDATE SET legal_name=CASE WHEN excluded.legal_name!='' THEN excluded.legal_name ELSE companies.legal_name END, public_name=COALESCE(excluded.public_name,companies.public_name), location=COALESCE(excluded.location,companies.location), confidence=CASE WHEN excluded.confidence>companies.confidence THEN excluded.confidence ELSE companies.confidence END`).bind(r.nif, r.legalName || "", best, r.address || r.location || null, evidence.length ? evidence[0].confidence : 0.65).run();
   await ensureEvidenceSchema(env);
   for (const e of evidence) {
     const row = await env.DB.prepare(`INSERT INTO public_names (nif,name,type,confidence) VALUES (?,?,?,?) ON CONFLICT(nif,name) DO UPDATE SET confidence=MAX(public_names.confidence,excluded.confidence), type=excluded.type RETURNING id`).bind(r.nif, e.name, e.type || "nome comercial", e.confidence).first<{id:number}>();
@@ -102,8 +100,9 @@ async function cachedEvidence(env: Env, nif: string): Promise<Evidence[]> {
 }
 async function discoverNifPt(nif:string,env:Env):Promise<Partial<Result>|null>{ if(!env.NIFPT_API_KEY) throw new Error("API key não configurada no Worker"); const f=await findByNifPt(nif,env.NIFPT_API_KEY); if(!f)return null; const r=f.record; const address=r.address||r.place?.address||null; return {nif,legalName:cleanLegalName(r.title),publicName:null,publicNames:(()=>{const n=cleanPublicName(r.alias);return n?[sourceEvidence(n,"nif.pt",undefined,0.85)]:[]})(),location:address||r.place?.city||r.city||r.geo?.county||null,address,website:r.contacts?.website||null,activity:r.activity||null,cae:r.cae||null,source:"nif.pt"}; }
 async function discoverVies(nif:string):Promise<Partial<Result>|null>{const f=await findByVies(nif);if(!f)return null;return {nif,legalName:cleanLegalName(f.legalName),publicNames:[],location:f.address||null,address:f.address||null,website:null,activity:null,cae:null,source:"vies",requestDate:f.requestDate||null};}
-async function discoverEmpresite(nif:string,legalName:string|null):Promise<Partial<Result>|null>{const f=await findByEmpresite(nif,legalName);if(!f)return null;const names=f.publicNames.map(n=>cleanPublicName(n)).filter((n):n is string=>!!n).map(n=>sourceEvidence(n,"Empresite",f.sourceUrl,0.95));return {nif,legalName:cleanLegalName(f.legalName),publicNames:names,location:f.address||null,address:f.address||null,website:null,activity:null,cae:null,source:"Empresite",sourceUrl:f.sourceUrl};}
+async function discoverEmpresite(nif:string,legalName:string|null,address:string|null):Promise<Partial<Result>|null>{const f=await findByEmpresite(nif,legalName,address);if(!f)return null;const names=f.publicNames.map(n=>cleanPublicName(n)).filter((n):n is string=>!!n).map(n=>sourceEvidence(n,"Empresite",f.sourceUrl,0.95));return {nif,legalName:cleanLegalName(f.legalName),publicNames:names,location:f.address||null,address:f.address||null,website:null,activity:null,cae:null,source:"Empresite",sourceUrl:f.sourceUrl};}
 async function discoverEInforma(nif:string):Promise<Partial<Result>|null>{const f=await findByEInforma(nif);if(!f)return null;const names=f.publicNames.map(n=>cleanPublicName(n)).filter((n):n is string=>!!n).map(n=>sourceEvidence(n,"eInforma",f.sourceUrl,0.82));return {nif,legalName:cleanLegalName(f.legalName),publicNames:names,location:f.address||null,address:f.address||null,website:f.website||null,activity:f.activity||null,cae:null,source:"eInforma",sourceUrl:f.sourceUrl};}
+async function discoverRacius(nif:string,legalName:string|null):Promise<Partial<Result>|null>{const f=await findByRacius(nif,legalName);if(!f)return null;return {nif,legalName:cleanLegalName(f.legalName),publicNames:[],location:f.address||null,address:f.address||null,website:null,activity:f.activity||null,cae:null,source:"Racius",sourceUrl:f.sourceUrl};}
 async function discoverPublicacoes(nif:string):Promise<Partial<Result>|null>{const f=await findByPublicacoes(nif);if(!f)return null;const names=f.publicNames.map(n=>cleanPublicName(n)).filter((n):n is string=>!!n).map(n=>sourceEvidence(n,"Publicações do Ministério da Justiça",f.sourceUrl,0.85,"nome público"));return {nif,legalName:cleanLegalName(f.legalName),publicNames:names,location:f.address||null,address:f.address||null,website:null,activity:null,cae:null,source:"publicacoes.mj.pt",sourceUrl:f.sourceUrl};}
 async function discoverRigorBiz(nif:string):Promise<Partial<Result>|null>{const f=await findByRigorBiz(nif);if(!f)return null;return {nif,legalName:cleanLegalName(f.legalName),publicNames:[],location:f.address||null,address:f.address||null,website:null,activity:null,cae:null,source:"rigorbiz",sourceUrl:f.sourceUrl};}
 function payload(r:Result){const legal=cleanLegalName(r.legalName);const names=mergeEvidence([],r.publicNames||[]).filter(e=>!legal||normaliseText(e.name)!==normaliseText(legal));return {nif:r.nif,legalName:legal,location:r.location,address:r.address||r.location||null,website:r.website||null,activity:r.activity||null,cae:r.cae||null,publicName:names[0]?.name||null,publicNames:names};}
@@ -120,25 +119,21 @@ export default { async fetch(request:Request,env:Env):Promise<Response>{
     let evid=await cachedEvidence(env,nif);
     if(row && !refresh && evid.length){return json({found:true,cached:true,company:payload({nif,legalName:row.legal_name,publicName:evid[0]?.name||null,publicNames:evid,location:row.location||null,address:row.address||row.location||null,website:row.website||null,activity:null,cae:null,source:"cache"}),sources_checked:["cache"]});}
 
-    // A refresh must not inherit an old false-positive name. The previous
-    // implementation kept stale English/Spanish/etc. evidence in D1 forever,
-    // even after the extraction logic was fixed.
-    if (refresh) {
-      try { await clearEvidence(env, nif); } catch {}
-      evid = [];
-    }
-
-    let result:Result|null=row?{nif,legalName:cleanLegalName(row.legal_name),publicName:null,publicNames:evid,location:row.location||null,address:row.address||row.location||null,website:row.website||null,activity:null,cae:null,source:"cache"}:null;
+    // Refresh means revalidate the sources; it must never delete previously
+    // confirmed evidence. A temporary source failure must not make a known
+    // commercial name disappear on the next request.
+    let result:Result|null=row?{nif,legalName:cleanLegalName(row.legal_name),publicName:evid[0]?.name||null,publicNames:evid,location:row.location||null,address:row.address||row.location||null,website:row.website||null,activity:null,cae:null,source:"cache"}:null;
     const checked:string[]=[], providerResults:Record<string,string>={}, errors:Record<string,string>={};
     const run=async(name:string,fn:()=>Promise<Partial<Result>|null>)=>{checked.push(name);try{const x=await fn();providerResults[name]=x?"found":"not_found";result=mergeResult(result,x);return x;}catch(e){providerResults[name]="error";errors[name]=String(e).replace(/[\r\n]/g," ").slice(0,200);return null;}};
     await run("nif.pt",()=>discoverNifPt(nif,env));
     await run("vies",()=>discoverVies(nif));
-    await run("Empresite",()=>discoverEmpresite(nif,result?.legalName||null));
+    await run("Racius",()=>discoverRacius(nif,result?.legalName||null));
+    await run("Empresite",()=>discoverEmpresite(nif,result?.legalName||null,result?.address||result?.location||null));
     await run("eInforma",()=>discoverEInforma(nif));
     await run("publicacoes.mj.pt",()=>discoverPublicacoes(nif));
     await run("rigorbiz",()=>discoverRigorBiz(nif));
     if(!result)return json({found:false,sources_checked:checked,provider_results:providerResults,...Object.keys(errors).length?{provider_errors:errors}:{}});
-    evid=mergeEvidence([],result.publicNames||[]).filter(e=>!result?.legalName||normaliseText(e.name)!==normaliseText(result.legalName!));
+    evid=mergeEvidence(result.publicNames||[],[]).filter(e=>!result?.legalName||normaliseText(e.name)!==normaliseText(result.legalName!));
     result.publicNames=evid;result.publicName=evid[0]?.name||null;
     await saveCompany(env,result,evid);
     return json({found:true,cached:false,company:payload(result),sources_checked:checked,provider_results:providerResults,...Object.keys(errors).length?{provider_errors:errors}:{}});
