@@ -11,6 +11,10 @@ function normalise(value: string): string {
   return value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
 }
 
+function key(value: string): string {
+  return normalise(value).toLocaleLowerCase();
+}
+
 function distanceMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const r = 6371000;
   const p1 = lat1 * Math.PI / 180, p2 = lat2 * Math.PI / 180;
@@ -49,19 +53,28 @@ function locality(value: string): string {
   return match[1].replace(/\b(?:HRT|MAD|MADALENA)\b/gi, "").replace(/\s+/g, " ").trim();
 }
 
+function geoMatchesInput(geo: any, pc: string, loc: string): boolean {
+  if (!geo) return false;
+  const a = geo.address || {};
+  const display = key(geo.display_name || "");
+  const postcodeMatches = !pc || key(a.postcode || "") === key(pc) || display.includes(key(pc));
+  if (!postcodeMatches) return false;
+  if (!loc) return true;
+  const wanted = key(loc);
+  const place = key([a.city, a.town, a.village, a.municipality, a.county, a.state_district].filter(Boolean).join(" "));
+  return place.includes(wanted) || wanted.includes(key(a.city || "")) || wanted.includes(key(a.town || "")) || display.includes(wanted);
+}
+
 async function geocode(query: string): Promise<any | null> {
   const url = new URL("https://nominatim.openstreetmap.org/search");
   url.searchParams.set("q", query);
   url.searchParams.set("format", "jsonv2");
   url.searchParams.set("addressdetails", "1");
-  url.searchParams.set("limit", "1");
+  url.searchParams.set("limit", "5");
   url.searchParams.set("countrycodes", "pt");
 
   const response = await fetch(url.toString(), {
-    headers: {
-      "user-agent": "nif-nome/2.7 (public business lookup bot)",
-      accept: "application/json"
-    }
+    headers: { "user-agent": "nif-nome/2.8 (public business lookup bot)", accept: "application/json" }
   });
   if (!response.ok) return null;
   const rows = await response.json<any[]>();
@@ -73,24 +86,30 @@ export async function findNearby(address: string): Promise<{ places: NearbyPlace
   const pc = postcode(raw);
   const addressClean = cleanAddressForGeocoding(raw);
   const loc = locality(raw);
-
   let geo: any | null = null;
 
-  // IMPORTANT: never geocode the postcode alone. A postcode can cover a
-  // large area and Nominatim may resolve it to a completely different point.
-  // Start with the full street + door number + postcode, then progressively
-  // relax only the parts that can cause a miss. This remains nationwide.
+  // Never use the postcode alone. It is a fallback that can resolve to a
+  // generic centroid in the wrong locality (e.g. Funchal for an Azores query).
+  // The postcode is used as a VALIDATION constraint, not as a standalone query.
   const candidates = [
     addressClean && pc ? `${addressClean}, ${pc}, Portugal` : "",
     addressClean && loc && pc ? `${addressClean}, ${loc}, ${pc}, Portugal` : "",
-    addressClean && loc ? `${addressClean}, ${loc}, Portugal` : "",
-    pc ? `${pc}, Portugal` : ""
+    addressClean && loc ? `${addressClean}, ${loc}, Portugal` : ""
   ].filter((v, i, arr) => v.length >= 4 && arr.indexOf(v) === i);
 
   for (const candidate of candidates) {
     try {
-      geo = await geocode(candidate);
-      if (geo) break;
+      const url = new URL("https://nominatim.openstreetmap.org/search");
+      url.searchParams.set("q", candidate);
+      url.searchParams.set("format", "jsonv2");
+      url.searchParams.set("addressdetails", "1");
+      url.searchParams.set("limit", "5");
+      url.searchParams.set("countrycodes", "pt");
+      const response = await fetch(url.toString(), { headers: { "user-agent": "nif-nome/2.8 (public business lookup bot)", accept: "application/json" } });
+      if (!response.ok) continue;
+      const rows = await response.json<any[]>();
+      const valid = rows.find(row => geoMatchesInput(row, pc, loc));
+      if (valid) { geo = valid; break; }
     } catch {}
   }
 
@@ -109,11 +128,7 @@ export async function findNearby(address: string): Promise<{ places: NearbyPlace
   let payload: any = null;
   for (const endpoint of endpoints) {
     try {
-      const overpass = await fetch(endpoint, {
-        method: "POST",
-        headers: { "content-type": "text/plain; charset=utf-8", "user-agent": "nif-nome/2.7" },
-        body: query
-      });
+      const overpass = await fetch(endpoint, { method: "POST", headers: { "content-type": "text/plain; charset=utf-8", "user-agent": "nif-nome/2.8" }, body: query });
       if (overpass.ok) { payload = await overpass.json<any>(); break; }
     } catch {}
   }
@@ -127,26 +142,15 @@ export async function findNearby(address: string): Promise<{ places: NearbyPlace
     if (!name) continue;
     const center = element.center || { lat: element.lat, lon: element.lon };
     if (typeof center.lat !== "number" || typeof center.lon !== "number") continue;
-    places.push({
-      name,
-      distance_m: Math.round(distanceMeters(lat, lon, center.lat, center.lon)),
-      category: category(tags),
-      address: addressFromTags(tags),
-      lat: center.lat,
-      lon: center.lon
-    });
+    places.push({ name, distance_m: Math.round(distanceMeters(lat, lon, center.lat, center.lon)), category: category(tags), address: addressFromTags(tags), lat: center.lat, lon: center.lon });
   }
 
   places.sort((a, b) => a.distance_m - b.distance_m);
   const unique = new Map<string, NearbyPlace>();
   for (const place of places) {
-    const key = `${place.name.toLocaleLowerCase()}|${place.address || ""}`;
-    if (!unique.has(key)) unique.set(key, place);
+    const keyValue = `${key(place.name)}|${key(place.address || "")}`;
+    if (!unique.has(keyValue)) unique.set(keyValue, place);
   }
 
-  return {
-    places: [...unique.values()].slice(0, 20),
-    geocoded: { display_name: geo.display_name, lat, lon },
-    source: "OpenStreetMap"
-  };
+  return { places: [...unique.values()].slice(0, 20), geocoded: { display_name: geo.display_name, lat, lon }, source: "OpenStreetMap" };
 }
