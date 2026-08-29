@@ -65,20 +65,36 @@ function geoMatchesInput(geo: any, pc: string, loc: string): boolean {
   return place.includes(wanted) || wanted.includes(key(a.city || "")) || wanted.includes(key(a.town || "")) || display.includes(wanted);
 }
 
-async function geocode(query: string): Promise<any | null> {
+async function geocodeCandidate(query: string, pc: string, loc: string): Promise<any | null> {
   const url = new URL("https://nominatim.openstreetmap.org/search");
   url.searchParams.set("q", query);
   url.searchParams.set("format", "jsonv2");
   url.searchParams.set("addressdetails", "1");
   url.searchParams.set("limit", "5");
   url.searchParams.set("countrycodes", "pt");
-
   const response = await fetch(url.toString(), {
-    headers: { "user-agent": "nif-nome/2.8 (public business lookup bot)", accept: "application/json" }
+    headers: { "user-agent": "nif-nome/2.9 (public business lookup bot)", accept: "application/json" }
   });
   if (!response.ok) return null;
   const rows = await response.json<any[]>();
-  return rows[0] || null;
+  return rows.find(row => geoMatchesInput(row, pc, loc)) || null;
+}
+
+async function fetchOverpass(endpoint: string, query: string): Promise<any> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "text/plain; charset=utf-8", "user-agent": "nif-nome/2.9" },
+      body: query,
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error(`Overpass ${response.status}`);
+    return await response.json<any>();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function findNearby(address: string): Promise<{ places: NearbyPlace[]; geocoded: { display_name: string; lat: number; lon: number } | null; source: string }> {
@@ -88,9 +104,8 @@ export async function findNearby(address: string): Promise<{ places: NearbyPlace
   const loc = locality(raw);
   let geo: any | null = null;
 
-  // Never use the postcode alone. It is a fallback that can resolve to a
-  // generic centroid in the wrong locality (e.g. Funchal for an Azores query).
-  // The postcode is used as a VALIDATION constraint, not as a standalone query.
+  // The complete street + number + postcode is the primary lookup. The postcode
+  // is a validation constraint as well, so a result from another city is rejected.
   const candidates = [
     addressClean && pc ? `${addressClean}, ${pc}, Portugal` : "",
     addressClean && loc && pc ? `${addressClean}, ${loc}, ${pc}, Portugal` : "",
@@ -99,41 +114,32 @@ export async function findNearby(address: string): Promise<{ places: NearbyPlace
 
   for (const candidate of candidates) {
     try {
-      const url = new URL("https://nominatim.openstreetmap.org/search");
-      url.searchParams.set("q", candidate);
-      url.searchParams.set("format", "jsonv2");
-      url.searchParams.set("addressdetails", "1");
-      url.searchParams.set("limit", "5");
-      url.searchParams.set("countrycodes", "pt");
-      const response = await fetch(url.toString(), { headers: { "user-agent": "nif-nome/2.8 (public business lookup bot)", accept: "application/json" } });
-      if (!response.ok) continue;
-      const rows = await response.json<any[]>();
-      const valid = rows.find(row => geoMatchesInput(row, pc, loc));
-      if (valid) { geo = valid; break; }
+      geo = await geocodeCandidate(candidate, pc, loc);
+      if (geo) break;
     } catch {}
   }
 
   if (!geo) return { places: [], geocoded: null, source: "OpenStreetMap" };
 
   const lat = Number(geo.lat), lon = Number(geo.lon);
-  const radius = 400;
-  const query = `[out:json][timeout:25];(nwr(around:${radius},${lat},${lon})["name"]["amenity"];nwr(around:${radius},${lat},${lon})["name"]["shop"];nwr(around:${radius},${lat},${lon})["name"]["tourism"];nwr(around:${radius},${lat},${lon})["name"]["craft"];nwr(around:${radius},${lat},${lon})["name"]["office"];nwr(around:${radius},${lat},${lon})["name"]["leisure"];nwr(around:${radius},${lat},${lon})["name"]["healthcare"];);out center tags;`;
+  const radius = 300;
+  const query = `[out:json][timeout:8];(nwr(around:${radius},${lat},${lon})["name"]["amenity"];nwr(around:${radius},${lat},${lon})["name"]["shop"];nwr(around:${radius},${lat},${lon})["name"]["tourism"];nwr(around:${radius},${lat},${lon})["name"]["craft"];nwr(around:${radius},${lat},${lon})["name"]["office"];nwr(around:${radius},${lat},${lon})["name"]["leisure"];nwr(around:${radius},${lat},${lon})["name"]["healthcare"];);out center tags;`;
 
+  // Overpass instances are public and can be busy. Race several independent
+  // endpoints instead of waiting through them one by one. The first successful
+  // response wins; this keeps the UI responsive while remaining nationwide.
   const endpoints = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.private.coffee/api/interpreter"
   ];
 
-  let payload: any = null;
-  for (const endpoint of endpoints) {
-    try {
-      const overpass = await fetch(endpoint, { method: "POST", headers: { "content-type": "text/plain; charset=utf-8", "user-agent": "nif-nome/2.8" }, body: query });
-      if (overpass.ok) { payload = await overpass.json<any>(); break; }
-    } catch {}
+  let payload: any;
+  try {
+    payload = await Promise.any(endpoints.map(endpoint => fetchOverpass(endpoint, query)));
+  } catch {
+    throw new Error("Não foi possível consultar os estabelecimentos no OpenStreetMap.");
   }
-
-  if (!payload) throw new Error("Não foi possível consultar os estabelecimentos no OpenStreetMap.");
 
   const places: NearbyPlace[] = [];
   for (const element of payload.elements || []) {
