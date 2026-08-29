@@ -34,24 +34,34 @@ function keyOf(value: string): string {
 }
 
 function extractDesignacaoComercial(html: string, legalName: string | null): string | null {
-  // 1. Procura na classe específica onde o Empresite coloca a designação comercial
-  const exactRegex = /Designa(?:ção|cao)\s+comercial[\s\S]*?<td[^>]*class=["'][^"']*td-datos-externos[^"']*["'][^>]*>([\s\S]*?)<\/td>/i;
-  let match = html.match(exactRegex);
+  // Decode HTML entities BEFORE searching: Empresite encodes words such as
+  // "Designação" as &ccedil;/&atilde;, so searching the raw HTML misses it.
+  const decoded = decodeHtml(html);
 
-  // 2. Fallback para qualquer TD seguinte caso a classe mude
-  if (!match) {
-    const fallbackRegex = /Designa(?:ção|cao)\s+comercial[\s\S]*?<td[^>]*>([\s\S]*?)<\/td>/i;
-    match = html.match(fallbackRegex);
+  // The company page uses a table row containing the label and its value.
+  // Restrict extraction to that row so we never pick a "Designação comercial"
+  // belonging to another company/page section.
+  const rowRegex = /<tr[^>]*>[\s\S]*?Designa(?:ção|cao)\s+comercial[\s\S]*?<\/tr>/i;
+  const row = decoded.match(rowRegex)?.[0];
+  if (row) {
+    const rowText = clean(row);
+    const match = rowText.match(/Designa(?:ção|cao)\s+comercial\s*[:|]?\s*(.+)$/i);
+    if (match?.[1]) {
+      const candidate = match[1].trim();
+      if (candidate.length >= 3 && candidate.length <= 120 && (!legalName || keyOf(candidate) !== keyOf(legalName))) {
+        return candidate;
+      }
+    }
   }
 
-  if (match && match[1]) {
+  // Fallback for minor HTML layout changes: use the decoded HTML and look for
+  // the next table cell after the label. This is still scoped to the company
+  // page, unlike the old page-wide text search.
+  const cellRegex = /Designa(?:ção|cao)\s+comercial[\s\S]*?<td[^>]*>([\s\S]*?)<\/td>/i;
+  const match = decoded.match(cellRegex);
+  if (match?.[1]) {
     const candidate = clean(match[1]);
-    if (
-      candidate &&
-      candidate.length >= 3 &&
-      candidate.length <= 120 &&
-      (!legalName || keyOf(candidate) !== keyOf(legalName))
-    ) {
+    if (candidate.length >= 3 && candidate.length <= 120 && (!legalName || keyOf(candidate) !== keyOf(legalName))) {
       return candidate;
     }
   }
@@ -90,7 +100,6 @@ export async function findByNif(nif: string, legalName: string | null): Promise<
       if (!response.ok) continue;
 
       const buffer = await response.arrayBuffer();
-      // O Empresite usa a codificação ISO-8859-1 (Latin-1)
       const html = new TextDecoder("iso-8859-1").decode(buffer);
 
       const publicName = extractDesignacaoComercial(html, legalName);
