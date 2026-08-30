@@ -136,7 +136,7 @@ export async function findByNif(nif: string, legalName: string | null, address: 
   // A very useful nationwide fallback: if the company name contains a clear
   // business keyword (pizzaria, restaurante, hotel, farmacia, etc.), searching
   // that keyword can expose the exact company card.
-  const keywords = ["PIZZARIA", "RESTAURANTE", "HOTEL", "CAFÉ", "CAFE", "FARMACIA", "FARMÁCIA", "BAR", "TALHO", "PADARIA", "OFICINA", "AUTO", "IMOBILIARIA", "IMOBILIÁRIA"];
+ const keywords = ["PIZZARIA", "RESTAURANTE", "HOTEL", "CAFÉ", "CAFE", "FARMACIA", "FARMÁCIA", "BAR", "TALHO", "PADARIA", "PADERIA", "PANIFICACAO", "PANIFICAÇÃO", "CONFEITARIA", "PASTELARIA", "OFICINA", "AUTO", "IMOBILIARIA", "IMOBILIÁRIA"];
   for (const w of words) if (keywords.includes(w.toUpperCase())) urls.push(`https://empresite.jornaldenegocios.pt/Actividade/${slugWord(w)}/`);
 
   const seen = new Set<string>();
